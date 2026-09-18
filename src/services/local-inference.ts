@@ -9,6 +9,7 @@ type LlamaContext = {
     },
     onToken: (data: { token: string }) => void,
   ) => Promise<{ text: string }>;
+  stopCompletion?: () => Promise<void>;
   release?: () => Promise<void> | void;
 };
 
@@ -23,6 +24,19 @@ type LlamaModule = {
 
 let loadedModelUri: string | null = null;
 let context: LlamaContext | null = null;
+let generationId = 0;
+
+export class GenerationStoppedError extends Error {
+  constructor() {
+    super('Generation stopped by user.');
+    this.name = 'GenerationStoppedError';
+  }
+}
+
+export async function stopLocalResponse() {
+  generationId += 1;
+  await context?.stopCompletion?.();
+}
 
 function getLlamaModule(): LlamaModule {
   try {
@@ -33,6 +47,7 @@ function getLlamaModule(): LlamaModule {
 }
 
 export async function generateLocalResponse(modelUri: string, history: Message[]) {
+  const requestId = ++generationId;
   if (loadedModelUri !== modelUri) {
     await context?.release?.();
     context = await getLlamaModule().initLlama({
@@ -56,5 +71,6 @@ export async function generateLocalResponse(modelUri: string, history: Message[]
     },
     () => undefined,
   );
+  if (requestId !== generationId) throw new GenerationStoppedError();
   return result.text.trim();
 }

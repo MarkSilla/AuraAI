@@ -19,17 +19,28 @@ jobs:
         with:
           node-version: 24
 
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
       - name: Install dependencies
         run: npm install
 
       - name: Validate Expo project
         run: npx expo config --type public
 
-      - name: Build APK with EAS
-        uses: expo/expo-github-action@v8
-        with:
-          eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
+      - name: Generate native Android project
+        run: npx expo prebuild --platform android --non-interactive
 
-      - name: Submit APK build
-        run: eas build --platform android --profile preview --non-interactive
+      - name: Build debug APK with Gradle
+        working-directory: android
+        run: ./gradlew assembleDebug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: auraai-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

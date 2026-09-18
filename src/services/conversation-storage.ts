@@ -93,3 +93,48 @@ export async function saveLocalConversation(messages: ApiMessage[]): Promise<Api
     messages,
   };
 }
+
+export async function renameLocalConversation(id: string, title: string): Promise<void> {
+  const nextTitle = title.trim();
+  if (!nextTitle) return;
+
+  if (!hasWatermelonNativeBridge()) {
+    fallbackConversations = fallbackConversations.map((conversation) =>
+      conversation.id === id ? { ...conversation, title: nextTitle } : conversation,
+    );
+    return;
+  }
+
+  const { database } = require('@/database') as typeof import('@/database');
+  const conversationsCollection = database.get<Conversation>('conversations');
+  const conversation = await conversationsCollection.find(id);
+  await database.write(async () => {
+    await conversation.update((record) => {
+      record.title = nextTitle;
+    });
+  });
+}
+
+export async function deleteLocalConversations(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+
+  if (!hasWatermelonNativeBridge()) {
+    fallbackConversations = fallbackConversations.filter((conversation) => !ids.includes(conversation.id));
+    return;
+  }
+
+  const { Q } = require('@nozbe/watermelondb');
+  const { database } = require('@/database') as typeof import('@/database');
+  const conversationsCollection = database.get<Conversation>('conversations');
+  const messagesCollection = database.get<Message>('messages');
+  await database.write(async () => {
+    const records = await Promise.all(ids.map((id) => conversationsCollection.find(id)));
+    const messages = await Promise.all(
+      ids.map((id) => messagesCollection.query(Q.where('conversation_id', id)).fetch()),
+    );
+    await Promise.all([
+      ...records.map((conversation) => conversation.destroyPermanently()),
+      ...messages.flat().map((message) => message.destroyPermanently()),
+    ]);
+  });
+}
