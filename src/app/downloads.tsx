@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View, useColorScheme } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { cancelBackgroundDownload, cancelTrackedDownload, listBackgroundDownloads, reconcileBackgroundDownloads, subscribeTrackedDownloads, type BackgroundDownload, type TrackedDownload } from '@/services/model-downloads';
+import { cancelBackgroundDownload, cancelTrackedDownload, downloadModel, listBackgroundDownloads, listPendingDownloads, reconcileBackgroundDownloads, subscribeTrackedDownloads, type BackgroundDownload, type PendingDownload, type TrackedDownload } from '@/services/model-downloads';
 
 export default function DownloadsScreen() {
   const router = useRouter();
@@ -12,6 +12,7 @@ export default function DownloadsScreen() {
   const colors = { background: dark ? '#000' : '#F7F7F8', surface: dark ? '#111' : '#FFF', border: dark ? '#2A2A2A' : '#E5E5E5', text: dark ? '#ECECEC' : '#202123', muted: dark ? '#AFAFAF' : '#6B6B6B', accent: dark ? '#ECECEC' : '#202123' };
   const [downloads, setDownloads] = useState<BackgroundDownload[]>([]);
   const [trackedDownloads, setTrackedDownloads] = useState<TrackedDownload[]>([]);
+  const [pendingDownloads, setPendingDownloads] = useState<PendingDownload[]>([]);
   const [refreshing, setRefreshing] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -19,6 +20,7 @@ export default function DownloadsScreen() {
     try {
       await reconcileBackgroundDownloads();
       setDownloads(await listBackgroundDownloads());
+      setPendingDownloads(listPendingDownloads());
     } finally {
       setRefreshing(false);
     }
@@ -35,6 +37,9 @@ export default function DownloadsScreen() {
   }, [refresh]);
 
   const visibleDownloads: Array<BackgroundDownload | TrackedDownload> = trackedDownloads.length > 0 ? trackedDownloads : downloads;
+  const continueDownload = (download: PendingDownload) => {
+    void downloadModel(download.url, download.fallbackName, () => undefined).then(refresh, refresh);
+  };
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
@@ -49,7 +54,25 @@ export default function DownloadsScreen() {
         {refreshing && <ActivityIndicator color={colors.accent} />}
       </View>
       <ScrollView contentContainerStyle={styles.content}>
-        {visibleDownloads.length === 0 ? <Text style={[styles.empty, { color: colors.muted }]}>No active model downloads.</Text> : visibleDownloads.map((download) => {
+        {pendingDownloads.map((download) => (
+          <View key={`pending-${download.fileName}`} style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View style={styles.pendingRow}>
+              <View style={[styles.continueCircle, { borderColor: colors.accent }]}>
+                <Pressable
+                  accessibilityLabel={`Continue downloading ${download.fileName}`}
+                  onPress={() => continueDownload(download)}
+                  style={styles.continueButton}>
+                  <SymbolView name={{ ios: 'play.fill', android: 'play_arrow', web: 'play_arrow' }} size={20} tintColor={colors.accent} />
+                </Pressable>
+              </View>
+              <View style={styles.pendingCopy}>
+                <Text numberOfLines={2} style={[styles.fileName, { color: colors.text }]}>{download.fileName}</Text>
+                <Text style={[styles.meta, { color: colors.muted }]}>Paused — tap play to continue</Text>
+              </View>
+            </View>
+          </View>
+        ))}
+        {pendingDownloads.length === 0 && visibleDownloads.length === 0 ? <Text style={[styles.empty, { color: colors.muted }]}>No active model downloads.</Text> : visibleDownloads.map((download) => {
           const progress = download.totalBytes > 0 ? download.bytesWritten / download.totalBytes : 0;
           return (
             <View key={'key' in download ? download.key : download.id} style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -81,6 +104,10 @@ const styles = StyleSheet.create({
   meta: { fontSize: 11 },
   track: { height: 6, borderRadius: 3, overflow: 'hidden' },
   fill: { height: 6, borderRadius: 3 },
+  pendingRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  continueCircle: { width: 46, height: 46, borderWidth: 2, borderRadius: 23, alignItems: 'center', justifyContent: 'center' },
+  continueButton: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center' },
+  pendingCopy: { flex: 1, gap: 4 },
   cancel: { alignSelf: 'flex-start', borderWidth: 1, borderRadius: 9, paddingHorizontal: 10, paddingVertical: 7 },
   cancelText: { fontSize: 11, fontWeight: '800' },
 });

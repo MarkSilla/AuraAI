@@ -29,7 +29,7 @@ import {
   renameLocalConversation,
   saveLocalConversation,
 } from '@/services/conversation-storage';
-import { deleteDownloadedModelFile, downloadModel, isModelDownloaded, listDownloadedModels, reconcileBackgroundDownloads, type ModelDownloadProgress } from '@/services/model-downloads';
+import { deleteDownloadedModelFile, downloadModel, isModelDownloaded, listDownloadedModels, listPendingDownloads, reconcileBackgroundDownloads, type ModelDownloadProgress } from '@/services/model-downloads';
 import { generateLocalResponse, GenerationStoppedError, stopLocalResponse, unloadLocalModel, type ThinkingLevel } from '@/services/local-inference';
 import { loadAppSettings, saveAppSettings } from '@/services/app-settings';
 import { AuraMark, IconButton, MessageBubble, SurfaceButton } from './aura-chat/chat-components';
@@ -158,15 +158,17 @@ export default function AuraChat() {
       setSettingsLoaded(true);
       if (!settings.hasSeenTutorial) router.push('/tutorial');
       const previous = canceled[0];
-      if (previous) {
+      const pending = listPendingDownloads()[0];
+      if (previous || pending) {
+        const interrupted = previous ?? pending;
         Alert.alert(
-          'Previous download canceled',
-          `${previous.fileName} was not fully downloaded. Would you like to try again?`,
+          'Continue model download?',
+          `${interrupted.fileName} was interrupted when AURA closed. Continue downloading it now?`,
           [
             { text: 'Cancel', style: 'cancel' },
             {
-              text: 'Retry',
-              onPress: () => void startModelDownload(previous.url, previous.fileName.replace(/\.gguf$/i, '')),
+              text: 'Continue',
+              onPress: () => void startModelDownload(interrupted.url, interrupted.fileName.replace(/\.gguf$/i, '')),
             },
           ],
         );

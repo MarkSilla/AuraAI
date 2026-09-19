@@ -11,6 +11,7 @@ export type ModelDownloadProgress = {
 };
 
 const modelsDirectory = new Directory(Paths.document, 'models');
+const pendingDownloadsFile = new File(Paths.document, 'aura-pending-downloads.json');
 const nativeDownloader = NativeModules.AuraBackgroundModelDownload as {
   start: (url: string, fileName: string) => Promise<{ id: number }>;
   status: (id: number) => Promise<{ status: number; bytesWritten: number; totalBytes: number; reason: number }>;
@@ -52,6 +53,50 @@ const queuedDownloads: Array<{
   reject: (error: Error) => void;
 }> = [];
 let processingQueue = false;
+
+export type PendingDownload = { url: string; fallbackName: string; fileName: string };
+
+function readPendingDownloads(): PendingDownload[] {
+  if (!pendingDownloadsFile.exists) return [];
+  try {
+    const value: unknown = JSON.parse(pendingDownloadsFile.textSync());
+    return Array.isArray(value) ? value.filter((item): item is PendingDownload => (
+      typeof item?.url === 'string' &&
+      typeof item?.fallbackName === 'string' &&
+      typeof item?.fileName === 'string'
+    )) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writePendingDownloads(downloads: PendingDownload[]) {
+  if (downloads.length === 0) {
+    if (pendingDownloadsFile.exists) pendingDownloadsFile.delete();
+    return;
+  }
+  if (!pendingDownloadsFile.exists) pendingDownloadsFile.create({ intermediates: true });
+  pendingDownloadsFile.write(JSON.stringify(downloads));
+}
+
+function rememberPendingDownload(url: string, fallbackName: string) {
+  const fileName = modelFileName(url, fallbackName);
+  const downloads = readPendingDownloads().filter((item) => item.fileName !== fileName);
+  downloads.push({ url, fallbackName, fileName });
+  writePendingDownloads(downloads);
+}
+
+function forgetPendingDownload(fileName: string) {
+  writePendingDownloads(readPendingDownloads().filter((item) => item.fileName !== fileName));
+}
+
+function isTransientDownloadError(message: string) {
+  return /socket|connection|network|timeout|abort|canceled|cancelled/i.test(message);
+}
+
+export function listPendingDownloads(): PendingDownload[] {
+  return readPendingDownloads().filter((item) => new File(modelsDirectory, `${item.fileName}.part`).exists);
+}
 
 function notifyTrackedDownloads() {
   const downloads = [...trackedDownloads.values()];
@@ -126,6 +171,7 @@ async function performDownload(
   const destination = getModelFile(url, fallbackName);
   const temporaryDestination = new File(modelsDirectory, `${destination.name}.part`);
   const key = destination.name;
+  rememberPendingDownload(url, fallbackName);
   const report = (progress: ModelDownloadProgress) => {
     onProgress(progress);
     if (progress.status === 'downloading') {
@@ -137,7 +183,9 @@ async function performDownload(
     }
   };
   if (destination.exists) {
+    forgetPendingDownload(destination.name);
     report({ status: 'completed', progress: 1, bytesWritten: destination.size, totalBytes: destination.size, uri: destination.uri });
+    forgetPendingDownload(destination.name);
     return destination;
   }
 
@@ -149,6 +197,7 @@ async function performDownload(
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
       if (!/unsupported path|destination/i.test(message)) {
+        forgetPendingDownload(destination.name);
         throw error;
       }
       // Older release binaries may point DownloadManager at the app-private
@@ -179,7 +228,10 @@ async function performDownload(
             report({ status: 'completed', progress: 1, bytesWritten: destination.size, totalBytes: destination.size, uri: destination.uri });
             return destination;
           }
-          if (status.status === 16) throw new Error(`The Android download failed (${status.reason ?? 'unknown error'}).`);
+          if (status.status === 16) {
+            forgetPendingDownload(destination.name);
+            throw new Error(`The Android download failed (${status.reason ?? 'unknown error'}).`);
+          }
           report({
             status: 'downloading',
             progress: status.totalBytes > 0 ? status.bytesWritten / status.totalBytes : 0,
@@ -191,6 +243,7 @@ async function performDownload(
         throw new Error('The model download was canceled.');
       } catch (error) {
         const message = error instanceof Error ? error.message : 'The model download failed.';
+        if (!isTransientDownloadError(message)) forgetPendingDownload(destination.name);
         report({ status: 'error', progress: 0, bytesWritten: 0, totalBytes: 0, error: message });
         throw new Error(message);
       } finally {
@@ -221,9 +274,9 @@ async function performDownload(
     });
     temporaryDestination.move(destination);
     report({ status: 'completed', progress: 1, bytesWritten: destination.size, totalBytes: destination.size, uri: destination.uri });
+    forgetPendingDownload(destination.name);
     return destination;
   } catch (error) {
-    if (temporaryDestination.exists) temporaryDestination.delete();
     const message = error instanceof Error ? error.message : 'The model download failed.';
     report({ status: 'error', progress: 0, bytesWritten: 0, totalBytes: 0, error: message });
     throw new Error(message);
