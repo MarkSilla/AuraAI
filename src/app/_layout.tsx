@@ -3,6 +3,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { useColorScheme } from 'react-native';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
+import { DownloadBanner } from '@/components/download-banner';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -12,6 +13,7 @@ export default function RootLayout() {
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <AnimatedSplashOverlay />
       <Stack screenOptions={{ headerShown: false }} />
+      <DownloadBanner />
     </ThemeProvider>
   );
 }

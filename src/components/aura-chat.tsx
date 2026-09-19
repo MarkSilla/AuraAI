@@ -1,10 +1,12 @@
 import * as Clipboard from 'expo-clipboard';
 import * as DocumentPicker from 'expo-document-picker';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { File } from 'expo-file-system';
 import { SymbolView } from 'expo-symbols';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
+  ActivityIndicator,
   Animated,
   Dimensions,
   Keyboard,
@@ -27,9 +29,10 @@ import {
   renameLocalConversation,
   saveLocalConversation,
 } from '@/services/conversation-storage';
-import { downloadModel, isModelDownloaded, listDownloadedModels, type ModelDownloadProgress } from '@/services/model-downloads';
-import { generateLocalResponse, GenerationStoppedError, stopLocalResponse } from '@/services/local-inference';
-import { AuraMark, IconButton, MessageBubble, SurfaceButton, TypingIndicator } from './aura-chat/chat-components';
+import { deleteDownloadedModelFile, downloadModel, isModelDownloaded, listDownloadedModels, reconcileBackgroundDownloads, type ModelDownloadProgress } from '@/services/model-downloads';
+import { generateLocalResponse, GenerationStoppedError, stopLocalResponse, unloadLocalModel, type ThinkingLevel } from '@/services/local-inference';
+import { loadAppSettings, saveAppSettings } from '@/services/app-settings';
+import { AuraMark, IconButton, MessageBubble, SurfaceButton } from './aura-chat/chat-components';
 import { configuredModel, MODEL_CATALOG, palette, SUGGESTIONS, TOOLS, type Conversation, type Message } from './aura-chat/theme';
 import { styles } from './aura-chat/styles';
 
@@ -45,15 +48,29 @@ const TOOL_ICONS = {
   Code: { ios: 'chevron.left.forwardslash.chevron.right', android: 'code', web: 'code' },
 } as const;
 
+function cleanConversationPreview(text: string) {
+  return text
+    .replace(/```[\s\S]*?```/g, '[code]')
+    .replace(/[*_`#=|>-]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export default function AuraChat() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const systemScheme = useColorScheme();
   const [themeMode, setThemeMode] = useState<'light' | 'dark'>(systemScheme === 'dark' ? 'dark' : 'light');
   const isDark = themeMode === 'dark';
   const colors = palette[themeMode];
   const [messages, setMessages] = useState<Message[]>([]);
+  const [streamingReply, setStreamingReply] = useState<Message | null>(null);
   const [draft, setDraft] = useState('');
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>('medium');
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
+  const [generationStatus, setGenerationStatus] = useState<'compacting' | 'generating'>('generating');
+  const [responseNotice, setResponseNotice] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [search, setSearch] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -62,6 +79,7 @@ export default function AuraChat() {
   const [modelVisible, setModelVisible] = useState(false);
   const [toolsVisible, setToolsVisible] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
+  const [modelQuickMenuVisible, setModelQuickMenuVisible] = useState(false);
   const [conversationMenuId, setConversationMenuId] = useState<string | null>(null);
   const [conversationMenuAnchor, setConversationMenuAnchor] = useState({ top: 0, opensAbove: false });
   const [selectionMode, setSelectionMode] = useState(false);
@@ -75,10 +93,15 @@ export default function AuraChat() {
   const [modelStatus, setModelStatus] = useState('');
   const [modelSearch, setModelSearch] = useState('');
   const [modelDownloads, setModelDownloads] = useState<Record<string, ModelDownloadProgress>>({});
+  const [downloadedModels, setDownloadedModels] = useState<File[]>([]);
   const [activeModelUri, setActiveModelUri] = useState<string | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [userActionsMessageId, setUserActionsMessageId] = useState<string | null>(null);
   const modelCancelActions = useRef<Record<string, () => void>>({});
+  const modelArrowRotation = useRef(new Animated.Value(0)).current;
+  const activeModel = downloadedModels.find((file) => file.uri === activeModelUri);
   const scrollRef = useRef<ScrollView>(null);
+  const shouldAutoScrollRef = useRef(true);
   const sendScale = useRef(new Animated.Value(1)).current;
   const drawerAnimation = useRef(new Animated.Value(0)).current;
   const drawerSurfaceRef = useRef<View>(null);
@@ -88,7 +111,11 @@ export default function AuraChat() {
     setDrawerMounted(true);
     setDrawerOpen(true);
   };
-  const closeDrawer = () => setDrawerOpen(false);
+  const closeDrawer = () => {
+    setDrawerOpen(false);
+    setConversationMenuId(null);
+    setUserActionsMessageId(null);
+  };
 
   useEffect(() => {
     if (!drawerMounted) return;
@@ -110,9 +137,48 @@ export default function AuraChat() {
     loadLocalConversations().then(setConversations).catch(() => Alert.alert('Local database unavailable', 'AURA could not open its local SQLite database.'));
   }, []);
   useEffect(() => {
-    const downloadedModels = listDownloadedModels();
-    if (downloadedModels.length > 0) setActiveModelUri(downloadedModels[0].uri);
+    void reconcileBackgroundDownloads().then(({ canceled }) => {
+      const savedModels = listDownloadedModels();
+      const settings = loadAppSettings();
+      setDownloadedModels(savedModels);
+      setThinkingLevel(settings.thinkingLevel || 'medium');
+      setThemeMode(settings.themeMode || (systemScheme === 'dark' ? 'dark' : 'light'));
+      setPinnedConversationIds(settings.pinnedConversationIds || []);
+      const savedUri = settings.activeModelUri && savedModels.some((file) => file.uri === settings.activeModelUri)
+        ? settings.activeModelUri
+        : savedModels[0]?.uri || null;
+      setActiveModelUri(savedUri);
+      setSettingsLoaded(true);
+      const previous = canceled[0];
+      if (previous) {
+        Alert.alert(
+          'Previous download canceled',
+          `${previous.fileName} was not fully downloaded. Would you like to try again?`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Retry',
+              onPress: () => void startModelDownload(previous.url, previous.fileName.replace(/\.gguf$/i, '')),
+            },
+          ],
+        );
+      }
+    });
   }, []);
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    saveAppSettings({ ...loadAppSettings(), activeModelUri, thinkingLevel, themeMode, pinnedConversationIds });
+  }, [activeModelUri, pinnedConversationIds, settingsLoaded, thinkingLevel, themeMode]);
+  useFocusEffect(
+    useCallback(() => {
+      void reconcileBackgroundDownloads().then(() => {
+        const savedModels = listDownloadedModels();
+        const savedUri = loadAppSettings().activeModelUri;
+        setDownloadedModels(savedModels);
+        setActiveModelUri(savedUri && savedModels.some((file) => file.uri === savedUri) ? savedUri : null);
+      });
+    }, []),
+  );
   useEffect(() => {
     const subscription = Keyboard.addListener('keyboardDidShow', () => {
       if (autoScroll) requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
@@ -120,12 +186,21 @@ export default function AuraChat() {
     return () => subscription.remove();
   }, [autoScroll]);
   useEffect(() => {
-    if (!autoScroll || messages.length === 0) return;
+    Animated.timing(modelArrowRotation, {
+      toValue: modelQuickMenuVisible ? 1 : 0,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+  }, [modelArrowRotation, modelQuickMenuVisible]);
+  useEffect(() => {
+    if (!autoScroll || !shouldAutoScrollRef.current || messages.length === 0) return;
     requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
-  }, [messages, isTyping, autoScroll]);
+  }, [messages, streamingReply, isTyping, autoScroll]);
 
   const clearConversation = () => {
     setMessages([]);
+    setStreamingReply(null);
+    setResponseNotice(null);
     setIsTyping(false);
     setShowScrollToBottom(false);
     setMenuVisible(false);
@@ -140,7 +215,7 @@ export default function AuraChat() {
     try {
       await saveConversation();
     } catch (error) {
-      Alert.alert('Backend unavailable', error instanceof Error ? error.message : 'Start the AURA backend first.');
+      Alert.alert('Conversation save failed', error instanceof Error ? error.message : 'AURA could not save this conversation.');
     }
     clearConversation();
   };
@@ -153,36 +228,74 @@ export default function AuraChat() {
       return;
     }
     const userMessage: Message = { id: `${Date.now()}-user`, role: 'user', content };
+    const assistantMessageId = `${Date.now()}-assistant`;
     setMessages((current) => [...current, userMessage]);
+    setStreamingReply(null);
+    setResponseNotice(null);
     setDraft('');
     setIsTyping(true);
+    setGenerationStatus('generating');
     Animated.sequence([
       Animated.timing(sendScale, { toValue: 0.88, duration: 80, useNativeDriver: true }),
       Animated.spring(sendScale, { toValue: 1, useNativeDriver: true }),
     ]).start();
     try {
-      const response = await generateLocalResponse(activeModelUri, [...messages, userMessage]);
-      setMessages((current) => [...current, { id: `${Date.now()}-assistant`, role: 'assistant', content: response }]);
+      const response = await generateLocalResponse(
+        activeModelUri,
+        [...messages, userMessage],
+        thinkingLevel,
+        (streamedText) => {
+          if (!streamedText.trim()) return;
+          setStreamingReply({ id: assistantMessageId, role: 'assistant', content: streamedText });
+        },
+        (status) => setGenerationStatus(status),
+      );
+      setMessages((current) => {
+        if (!response.trim()) return current.filter((message) => message.id !== assistantMessageId);
+        return [...current, { id: assistantMessageId, role: 'assistant', content: response }];
+      });
+      setStreamingReply(null);
+      void saveLocalConversation([
+        ...messages,
+        userMessage,
+        { id: assistantMessageId, role: 'assistant', content: response },
+      ]).catch((error) => {
+        Alert.alert('Autosave failed', error instanceof Error ? error.message : 'AURA could not save this conversation.');
+      });
     } catch (error) {
       if (error instanceof GenerationStoppedError) return;
+      setMessages((current) => current.filter((message) => message.id !== assistantMessageId || message.content.trim()));
+      setStreamingReply(null);
       Alert.alert(
         activeModelUri ? 'Local model unavailable' : 'Backend unavailable',
         error instanceof Error ? error.message : activeModelUri ? 'The downloaded model could not generate a response.' : 'Start the AURA backend first.',
       );
     } finally {
       setIsTyping(false);
+      setStreamingReply(null);
+      setGenerationStatus('generating');
     }
   };
   const stopMessageGeneration = async () => {
     try {
       await stopLocalResponse();
+      setResponseNotice('Response stopped.');
     } catch (error) {
       Alert.alert('Unable to stop response', error instanceof Error ? error.message : 'The AI response could not be stopped.');
     }
   };
   const copyMessage = async (content: string) => {
-    await Clipboard.setStringAsync(content);
-    Alert.alert('Copied', 'AURA’s response is on your clipboard.');
+    const text = content.trim();
+    if (!text) {
+      Alert.alert('Copy failed', 'There is no message text to copy.');
+      return;
+    }
+    try {
+      await Clipboard.setStringAsync(text);
+      Alert.alert('Copied', 'The message was copied to your clipboard.');
+    } catch (error) {
+      Alert.alert('Copy failed', error instanceof Error ? error.message : 'The message could not be copied to your clipboard.');
+    }
   };
   const exportConversations = async (items: Conversation[]) => {
     if (items.length === 0) return;
@@ -206,6 +319,7 @@ export default function AuraChat() {
             try {
               await deleteLocalConversations(ids);
               setConversations((current) => current.filter((item) => !ids.includes(item.id)));
+              setPinnedConversationIds((current) => current.filter((id) => !ids.includes(id)));
               setSelectedConversationIds([]);
               setSelectionMode(false);
               setConversationMenuId(null);
@@ -240,10 +354,17 @@ export default function AuraChat() {
       const file = await downloadModel(
         url,
         name,
-        (progress) => setModelDownloads((current) => ({ ...current, [url]: progress })),
+        (progress) => {
+          setModelDownloads((current) => ({ ...current, [url]: progress }));
+          if (progress.status === 'downloading') {
+            const percentage = progress.totalBytes > 0 ? ` ${Math.round(progress.progress * 100)}%` : '';
+            setModelStatus(`Installing ${name}…${percentage}`);
+          }
+        },
         (cancel) => { modelCancelActions.current[url] = cancel; },
       );
       setActiveModelUri(file.uri);
+      setDownloadedModels(listDownloadedModels());
       setModelStatus(`${name} is saved on this device.`);
     } catch (error) {
       setModelStatus(error instanceof Error ? error.message : 'The model download failed.');
@@ -260,6 +381,17 @@ export default function AuraChat() {
       return;
     }
     await startModelDownload(url, 'Custom GGUF model');
+  };
+  const offloadActiveModel = async () => {
+    await unloadLocalModel();
+    setActiveModelUri(null);
+    setModelStatus('Model offloaded. Select a downloaded model to connect again.');
+  };
+  const removeDownloadedModel = async (file: File) => {
+    if (file.uri === activeModelUri) await offloadActiveModel();
+    deleteDownloadedModelFile(file);
+    setDownloadedModels(listDownloadedModels());
+    setModelStatus(`${file.name} was removed from this device.`);
   };
   const filteredConversations = conversations.filter((item) => item.title.toLowerCase().includes(search.toLowerCase()));
   const filteredModels = MODEL_CATALOG.filter((model) =>
@@ -337,7 +469,7 @@ export default function AuraChat() {
         onLongPress={() => { setSelectedConversationIds([]); openConversationMenu(item.id); }}
         delayLongPress={450}>
         {selectionMode ? <View style={[styles.checkbox, { borderColor: selected ? colors.accent : colors.borderStrong, backgroundColor: selected ? colors.accent : 'transparent' }]}>{selected && <SymbolView name={{ ios: 'checkmark', android: 'check', web: 'check' }} size={13} tintColor={themeMode === 'dark' ? '#000' : '#FFF'} />}</View> : <SymbolView name={{ ios: pinnedConversationIds.includes(item.id) ? 'pin.fill' : 'bubble.left', android: pinnedConversationIds.includes(item.id) ? 'push_pin' : 'chat_bubble_outline', web: pinnedConversationIds.includes(item.id) ? 'push_pin' : 'chat' }} size={18} tintColor={pinnedConversationIds.includes(item.id) ? colors.text : colors.muted} />}
-        <View style={styles.conversationItemCopy}><Text numberOfLines={1} style={[styles.drawerItemText, { color: conversationTextColor }]}>{item.title}</Text><Text numberOfLines={1} style={[styles.conversationPreview, { color: selectionMode && selected ? colors.text : colors.muted }]}>{item.preview}</Text></View>
+        <View style={styles.conversationItemCopy}><Text numberOfLines={1} style={[styles.drawerItemText, { color: conversationTextColor }]}>{cleanConversationPreview(item.title)}</Text><Text numberOfLines={1} style={[styles.conversationPreview, { color: selectionMode && selected ? colors.text : colors.muted }]}>{cleanConversationPreview(item.preview)}</Text></View>
       </Pressable>
     </View>;
   };
@@ -345,6 +477,14 @@ export default function AuraChat() {
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]} edges={['top', 'left', 'right']}>
       <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}>
+        {menuVisible && <Pressable
+          accessibilityLabel="Close menu"
+          style={styles.actionMenuDismissOverlay}
+          onPress={() => {
+            setMenuVisible(false);
+            setModelQuickMenuVisible(false);
+          }}
+        />}
         <View style={[styles.floatingMenu, { top: 2 }]}>
           <View style={[styles.floatingMenuButton, { backgroundColor: colors.surface, borderColor: colors.border, shadowColor: colors.shadow }]}>
             <IconButton label={drawerOpen ? 'Close AURA menu' : 'Open AURA menu'} onPress={() => (drawerOpen ? closeDrawer() : openDrawer())}>
@@ -356,28 +496,63 @@ export default function AuraChat() {
           <View style={[styles.floatingActionsGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <IconButton label="Start new conversation" onPress={newConversation}><SymbolView name={{ ios: 'square.and.pencil', android: 'edit', web: 'edit' }} size={19} tintColor={colors.text} /></IconButton>
             <View style={[styles.actionDivider, { backgroundColor: colors.border }]} />
-            <IconButton label="Open conversation menu" onPress={() => setMenuVisible((open) => !open)}><SymbolView name={{ ios: 'ellipsis', android: 'more_vert', web: 'more_horiz' }} size={21} tintColor={colors.text} /></IconButton>
+            <IconButton label="Open conversation menu" onPress={() => { setMenuVisible((open) => !open); setModelQuickMenuVisible(false); }}><SymbolView name={{ ios: 'ellipsis', android: 'more_vert', web: 'more_horiz' }} size={21} tintColor={colors.text} /></IconButton>
           </View>
           {menuVisible && <View style={[styles.actionBubble, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>
-            <Pressable style={styles.actionBubbleItem} onPress={() => { setMenuVisible(false); setSettingsVisible(true); }}>
+            <Pressable style={styles.actionBubbleItem} onPress={() => { setMenuVisible(false); setModelQuickMenuVisible(false); setSettingsVisible(true); }}>
               <SymbolView name={{ ios: 'gearshape', android: 'settings', web: 'settings' }} size={17} tintColor={colors.text} />
               <Text style={[styles.actionBubbleText, { color: colors.text }]}>Settings</Text>
             </Pressable>
-            <Pressable style={styles.actionBubbleItem} onPress={() => { setMenuVisible(false); setModelVisible(true); }}>
+            <Pressable style={styles.actionBubbleItem} onPress={() => setModelQuickMenuVisible((open) => !open)}>
               <SymbolView name={{ ios: 'cpu', android: 'memory', web: 'memory' }} size={17} tintColor={colors.text} />
               <Text style={[styles.actionBubbleText, { color: colors.text }]}>Models</Text>
+              <Animated.View style={{ transform: [{ rotate: modelArrowRotation.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '90deg'] }) }] }}>
+                <SymbolView name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }} size={14} tintColor={colors.muted} />
+              </Animated.View>
             </Pressable>
-            <Pressable style={styles.actionBubbleItem} onPress={() => { setMenuVisible(false); setThemeMode(themeMode === 'dark' ? 'light' : 'dark'); }}>
+            {modelQuickMenuVisible && <View style={[styles.quickModelBubble, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>
+              <Text style={[styles.quickModelTitle, { color: colors.muted }]}>INSTALLED MODELS</Text>
+              {downloadedModels.length === 0 ? (
+                <Text style={[styles.quickModelEmpty, { color: colors.muted }]}>No downloaded models</Text>
+              ) : downloadedModels.slice(0, 3).map((file) => (
+                <Pressable
+                  key={file.uri}
+                  style={styles.quickModelItem}
+                  onPress={() => { setActiveModelUri(file.uri); setMenuVisible(false); setModelQuickMenuVisible(false); }}>
+                  <SymbolView
+                    name={{ ios: 'checkmark.circle.fill', android: 'check_circle', web: 'check_circle' }}
+                    size={16}
+                    tintColor={activeModelUri === file.uri ? colors.accent : colors.muted}
+                  />
+                  <Text numberOfLines={1} style={[styles.quickModelName, { color: colors.text }]}>{file.name}</Text>
+                  {activeModelUri === file.uri && <Text style={[styles.quickModelActive, { color: colors.muted }]}>Active</Text>}
+                </Pressable>
+              ))}
+              {downloadedModels.length > 0 && (
+                <Pressable style={styles.quickModelSeeAll} onPress={() => { setMenuVisible(false); setModelQuickMenuVisible(false); router.push('/models'); }}>
+                  <Text style={[styles.quickModelSeeAllText, { color: colors.text }]}>See all...</Text>
+                  <SymbolView name={{ ios: 'arrow.right', android: 'arrow_forward', web: 'arrow_forward' }} size={14} tintColor={colors.muted} />
+                </Pressable>
+              )}
+            </View>}
+            <Pressable style={styles.actionBubbleItem} onPress={() => { setMenuVisible(false); setModelQuickMenuVisible(false); setThemeMode(themeMode === 'dark' ? 'light' : 'dark'); }}>
               <SymbolView name={themeMode === 'dark' ? { ios: 'sun.max', android: 'light_mode', web: 'light_mode' } : { ios: 'moon', android: 'dark_mode', web: 'dark_mode' }} size={17} tintColor={colors.text} />
               <Text style={[styles.actionBubbleText, { color: colors.text }]}>{themeMode === 'dark' ? 'Light mode' : 'Dark mode'}</Text>
             </Pressable>
-            <Pressable style={styles.actionBubbleItem} onPress={clearConversation}>
+            <Pressable style={styles.actionBubbleItem} onPress={() => { setMenuVisible(false); setModelQuickMenuVisible(false); clearConversation(); }}>
               <SymbolView name={{ ios: 'trash', android: 'delete_outline', web: 'delete' }} size={17} tintColor="#C25E5E" />
               <Text style={[styles.actionBubbleText, { color: colors.text }]}>Clear conversation</Text>
             </Pressable>
           </View>}
         </View>
         <View style={styles.conversationFrame}>
+          {userActionsMessageId && (
+            <Pressable
+              accessibilityLabel="Close message actions"
+              style={styles.conversationActionDismissOverlay}
+              onPress={() => setUserActionsMessageId(null)}
+            />
+          )}
           <ScrollView
             ref={scrollRef}
             style={styles.conversation}
@@ -389,6 +564,7 @@ export default function AuraChat() {
               const { contentOffset, contentSize, layoutMeasurement } = nativeEvent;
               const isAwayFromBottom = contentSize.height > layoutMeasurement.height + 40
                 && contentOffset.y + layoutMeasurement.height < contentSize.height - 40;
+              shouldAutoScrollRef.current = !isAwayFromBottom;
               setShowScrollToBottom(isAwayFromBottom);
             }}>
             {messages.length === 0 ? <View style={styles.emptyState}>
@@ -398,14 +574,18 @@ export default function AuraChat() {
                 <Text style={[styles.noModelTitle, { color: colors.text }]}>You haven’t downloaded a model yet.</Text>
                 <Text style={[styles.noModelText, { color: colors.muted }]}>Choose a GGUF model to run AURA directly on this device.</Text>
                 <Pressable style={[styles.modelDownloadButton, { backgroundColor: colors.accent }]} onPress={() => setModelVisible(true)}>
-                  <Text style={styles.modelDownloadButtonText}>Download a model</Text>
+                  <Text style={[styles.modelDownloadButtonText, { color: isDark ? '#000000' : '#FFFFFF' }]}>Download a model</Text>
                 </Pressable>
               </View> : <>
                 <Text style={[styles.welcomeSubtitle, { color: colors.muted }]}>How can I help you today?</Text>
                 <View style={styles.suggestions}>{SUGGESTIONS.map((suggestion) => <SurfaceButton key={suggestion} label={suggestion} onPress={() => sendMessage(suggestion)} colors={colors}><Text style={[styles.suggestionText, { color: colors.text }]}>{suggestion}</Text><SymbolView name={{ ios: 'arrow.up.right', android: 'north_east', web: 'arrow_upward' }} size={14} tintColor={colors.accent} /></SurfaceButton>)}</View>
               </>}
-            </View> : messages.map((message) => <MessageBubble key={message.id} message={message} colors={colors} onCopy={copyMessage} />)}
-            {messages.length > 0 && isTyping && showTyping && <TypingIndicator colors={colors} />}
+            </View> : <>
+              {messages.map((message) => <MessageBubble key={message.id} message={message} colors={colors} onCopy={copyMessage} userActionsVisible={userActionsMessageId === message.id} onUserActionsChange={(visible) => setUserActionsMessageId(visible ? message.id : null)} />)}
+              {streamingReply && <MessageBubble key={streamingReply.id} message={streamingReply} colors={colors} onCopy={copyMessage} userActionsVisible={false} onUserActionsChange={() => undefined} streaming={showTyping} />}
+              {isTyping && !streamingReply && <Text style={[styles.thinkingText, { color: colors.muted }]}>{generationStatus === 'compacting' ? 'Compacting conversation…' : 'AURA is thinking…'}</Text>}
+              {responseNotice && <Text style={[styles.thinkingText, { color: colors.muted }]}>{responseNotice}</Text>}
+            </>}
           </ScrollView>
           {showScrollToBottom && <Pressable
             accessibilityRole="button"
@@ -424,11 +604,22 @@ export default function AuraChat() {
         </View>
         <View style={[styles.composerArea, { backgroundColor: colors.background, paddingBottom: Math.max(insets.bottom, 10) }]}>
           <View style={[styles.composer, { backgroundColor: colors.surfaceRaised, borderColor: colors.borderStrong }]}>
-            <IconButton label="Open tools" onPress={() => setToolsVisible(true)}><Text style={[styles.plus, { color: colors.accent }]}>+</Text></IconButton>
-            <TextInput value={draft} onChangeText={setDraft} placeholder="Ask AURA anything..." placeholderTextColor={colors.muted} multiline maxLength={2000} style={[styles.input, { color: colors.text }]} onSubmitEditing={() => sendMessage()} blurOnSubmit={false} accessibilityLabel="Message AURA" />
-            <IconButton label="Record a voice message" onPress={() => Alert.alert('Voice input', 'Voice input is ready to connect to your device microphone.')}><SymbolView name={{ ios: 'mic', android: 'mic', web: 'mic' }} size={18} tintColor={colors.muted} /></IconButton>
-            <Animated.View style={{ transform: [{ scale: sendScale }] }}><Pressable accessibilityRole="button" accessibilityLabel={isTyping ? 'Stop AURA response' : 'Send message'} disabled={!isTyping && !draft.trim()} onPress={() => void (isTyping ? stopMessageGeneration() : sendMessage())} style={[styles.sendButton, { backgroundColor: isTyping || draft.trim() ? colors.accent : colors.border }]}><SymbolView name={isTyping ? { ios: 'stop.fill', android: 'stop', web: 'stop' } : { ios: 'arrow.up', android: 'arrow_upward', web: 'arrow_upward' }} size={isTyping ? 15 : 17} tintColor="#FFFFFF" /></Pressable></Animated.View>
-          </View>
+           <TextInput value={draft} onChangeText={setDraft} placeholder="Ask AURA anything..." placeholderTextColor={colors.muted} multiline maxLength={2000} style={[styles.input, { color: colors.text }]} onSubmitEditing={() => sendMessage()} blurOnSubmit={false} accessibilityLabel="Message AURA" />
+           <View style={styles.composerBottomRow}>
+             <IconButton label="Open tools" onPress={() => setToolsVisible(true)}><Text style={[styles.plus, { color: colors.accent }]}>+</Text></IconButton>
+             <Pressable
+               accessibilityRole="button"
+               accessibilityLabel={`Thinking level ${thinkingLevel}`}
+               onPress={() => setThinkingLevel((current) => current === 'low' ? 'medium' : current === 'medium' ? 'high' : 'low')}
+               style={({ pressed }) => [styles.thinkingLevelButton, pressed && styles.pressed]}>
+               <Text style={[styles.thinkingLevelLabel, { color: colors.muted }]}>Thinking: </Text>
+               <Text style={[styles.thinkingLevelValue, { color: colors.text }]}>{thinkingLevel}</Text>
+             </Pressable>
+             <View style={styles.composerBottomSpacer} />
+             <IconButton label="Record a voice message" onPress={() => Alert.alert('Voice input', 'Voice input is ready to connect to your device microphone.')}><SymbolView name={{ ios: 'mic', android: 'mic', web: 'mic' }} size={18} tintColor={colors.muted} /></IconButton>
+             <Animated.View style={{ transform: [{ scale: sendScale }] }}><Pressable accessibilityRole="button" accessibilityLabel={isTyping ? 'Stop AURA response' : 'Send message'} disabled={!isTyping && !draft.trim()} onPress={() => void (isTyping ? stopMessageGeneration() : sendMessage())} style={[styles.sendButton, { backgroundColor: isTyping || draft.trim() ? colors.accent : colors.border }]}><SymbolView name={isTyping ? { ios: 'stop.fill', android: 'stop', web: 'stop' } : { ios: 'arrow.up', android: 'arrow_upward', web: 'arrow_upward' }} size={isTyping ? 15 : 17} tintColor={isTyping || draft.trim() ? (isDark ? '#000000' : '#FFFFFF') : colors.muted} /></Pressable></Animated.View>
+           </View>
+         </View>
           <Text style={[styles.disclaimer, { color: colors.muted }]}>AURA can make mistakes. Check important information.</Text>
         </View>
       </KeyboardAvoidingView>
@@ -436,7 +627,7 @@ export default function AuraChat() {
         <View style={styles.drawerRoot}>
           <Animated.View style={[styles.drawer, { width: DRAWER_WIDTH, backgroundColor: colors.surfaceRaised, borderRightColor: colors.border, transform: [{ translateX: drawerTranslateX }] }]}>
           <View ref={drawerSurfaceRef} style={styles.drawerSurface}>
-          {conversationMenuId && <Pressable style={styles.menuDismissOverlay} onPress={() => setConversationMenuId(null)} />}
+          {conversationMenuId && <Pressable style={styles.conversationMenuDismissOverlay} onPress={() => setConversationMenuId(null)} />}
           {conversationMenuId && (() => {
             const item = conversations.find((conversation) => conversation.id === conversationMenuId);
             if (!item) return null;
@@ -503,7 +694,7 @@ export default function AuraChat() {
           <ScrollView contentContainerStyle={styles.drawerRecentContent} style={styles.drawerScroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             {displayedConversations.length === 0 ? <Text style={[styles.emptyHistory, { color: colors.muted }]}>No recent conversations</Text> : displayedConversations.map((item) => renderConversationItem(item, 'recent'))}
           </ScrollView>
-          <View style={[styles.drawerFooter, { borderTopColor: colors.border }]}><Pressable style={[styles.modelWidget, { borderColor: colors.border, backgroundColor: colors.surfaceRaised }]} onPress={() => { closeDrawer(); setModelVisible(true); }}><View style={[styles.modelBadge, { borderColor: colors.border }]}><SymbolView name={{ ios: 'cpu', android: 'memory', web: 'memory' }} size={17} tintColor={colors.accent} /></View><View style={styles.modelCopy}><Text style={[styles.drawerFooterTitle, { color: colors.text }]}>{configuredModel || 'No model connected'}</Text><Text style={[styles.drawerFooterText, { color: colors.muted }]}>Manage connected models</Text></View><SymbolView name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }} size={16} tintColor={colors.muted} /></Pressable></View>
+          <View style={[styles.drawerFooter, { borderTopColor: colors.border }]}><Pressable style={[styles.modelWidget, { borderColor: colors.border, backgroundColor: isDark ? '#000000' : colors.surfaceRaised }]} onPress={() => { closeDrawer(); setModelVisible(true); }}><View style={[styles.modelBadge, { borderColor: colors.border }]}><SymbolView name={{ ios: 'cpu', android: 'memory', web: 'memory' }} size={17} tintColor={activeModelUri ? colors.accent : colors.muted} /></View><View style={styles.modelCopy}><Text numberOfLines={1} style={[styles.drawerFooterTitle, { color: colors.text }]}>{activeModel?.name || configuredModel || 'No model connected'}</Text><Text style={[styles.drawerFooterText, { color: colors.muted }]}>{activeModel ? 'Connected local model' : 'Tap to connect a model'}</Text></View><SymbolView name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }} size={16} tintColor={colors.muted} /></Pressable></View>
           </View>
           <View pointerEvents="none" style={[styles.drawerFadeTop, { backgroundColor: colors.surfaceRaised }]} />
           <View pointerEvents="none" style={[styles.drawerFadeBottom, { backgroundColor: colors.surfaceRaised }]} />
@@ -528,7 +719,7 @@ export default function AuraChat() {
                 <View style={styles.settingRow}><View style={styles.settingCopy}><Text style={[styles.settingTitle, { color: colors.text }]}>Theme</Text><Text style={[styles.settingDescription, { color: colors.muted }]}>Choose a comfortable reading mode.</Text></View><Pressable style={styles.settingValueButton} onPress={() => setThemeMode(themeMode === 'dark' ? 'light' : 'dark')}><Text style={[styles.settingValue, { color: colors.text }]}>{themeMode === 'dark' ? 'Dark' : 'Light'}</Text><SymbolView name={{ ios: 'chevron.up.chevron.down', android: 'unfold_more', web: 'unfold_more' }} size={14} tintColor={colors.muted} /></Pressable></View>
               </View>
               <Text style={[styles.settingsSection, { color: colors.muted }]}>MODEL</Text>
-              <View style={[styles.settingsCard, { borderColor: colors.border }]}><View style={styles.settingRow}><View style={styles.settingCopy}><Text style={[styles.settingTitle, { color: colors.text }]}>Active model</Text><Text style={[styles.settingDescription, { color: colors.muted }]}>{configuredModel || 'No model connected'}</Text></View></View><View style={[styles.settingInline, { borderTopColor: colors.border }]}><Pressable onPress={() => { setSettingsVisible(false); setModelVisible(true); }}><Text style={[styles.settingValue, { color: colors.text }]}>Manage models</Text></Pressable></View></View>
+              <View style={[styles.settingsCard, { borderColor: colors.border }]}><View style={styles.settingRow}><View style={styles.settingCopy}><Text style={[styles.settingTitle, { color: colors.text }]}>Active model</Text><Text style={[styles.settingDescription, { color: colors.muted }]}>{activeModel?.name || configuredModel || 'No model connected'}</Text></View></View><View style={[styles.settingInline, { borderTopColor: colors.border }]}><Pressable onPress={() => { setSettingsVisible(false); setModelVisible(true); }}><Text style={[styles.settingValue, { color: colors.text }]}>Manage models</Text></Pressable></View></View>
               <Text style={[styles.settingsSection, { color: colors.muted }]}>DATA</Text>
               <View style={[styles.settingsCard, { borderColor: colors.border }]}><Pressable style={styles.settingRow} onPress={clearConversation}><View style={styles.settingCopy}><Text style={[styles.settingTitle, { color: colors.text }]}>Clear current conversation</Text><Text style={[styles.settingDescription, { color: colors.muted }]}>Remove messages from this screen.</Text></View><SymbolView name={{ ios: 'trash', android: 'delete_outline', web: 'delete' }} size={17} tintColor={colors.muted} /></Pressable></View>
               <Text style={[styles.aboutNote, { color: colors.muted }]}>AURA keeps your conversations on this device when local storage is available.</Text>
@@ -539,7 +730,7 @@ export default function AuraChat() {
       <Modal visible={modelVisible} transparent animationType="slide" onRequestClose={() => setModelVisible(false)}>
         <Pressable style={styles.sheetBackdrop} onPress={() => setModelVisible(false)}>
           <View style={[styles.modelSheet, { backgroundColor: colors.surfaceRaised }]}>
-            <View style={styles.modelSheetHeader}><View><Text style={[styles.sheetTitle, { color: colors.text }]}>Model Manager</Text><Text style={[styles.modelDescription, { color: colors.muted }]}>Connect a hosted model or download a GGUF model for local replies.</Text></View><IconButton label="Close model manager" onPress={() => setModelVisible(false)}><SymbolView name={{ ios: 'xmark', android: 'close', web: 'close' }} size={18} tintColor={colors.muted} /></IconButton></View>
+            <View style={styles.modelSheetHeader}><View><Text style={[styles.sheetTitle, { color: colors.text }]}>Model Manager</Text><Text style={[styles.modelDescription, { color: colors.muted }]}>Connect a hosted model or download a GGUF model for local replies.</Text></View><View style={styles.modelHeaderActions}><IconButton label="Open downloads" onPress={() => { setModelVisible(false); router.push('/downloads'); }}><SymbolView name={{ ios: 'arrow.down.circle', android: 'download', web: 'download' }} size={18} tintColor={colors.muted} /></IconButton><IconButton label="Close model manager" onPress={() => setModelVisible(false)}><SymbolView name={{ ios: 'xmark', android: 'close', web: 'close' }} size={18} tintColor={colors.muted} /></IconButton></View></View>
             <View style={[styles.modelSearchBox, { borderColor: colors.border, backgroundColor: colors.background }]}>
               <SymbolView name={{ ios: 'magnifyingglass', android: 'search', web: 'search' }} size={16} tintColor={colors.muted} />
               <TextInput
@@ -571,23 +762,34 @@ export default function AuraChat() {
                   </View>
                   <Text style={[styles.modelDownloadLabel, { color: colors.muted }]}>
                     {modelDownloads[model.url]?.status === 'downloading'
-                      ? 'Cancel'
+                      ? `${Math.round((modelDownloads[model.url]?.progress || 0) * 100)}%`
                       : modelDownloads[model.url]?.status === 'completed' || isModelDownloaded(model.url, model.name) ? 'Saved' : 'Download'}
                   </Text>
+                  {modelDownloads[model.url]?.status === 'downloading' && (
+                    <ActivityIndicator size="small" color={colors.accent} />
+                  )}
                 </Pressable>
               )) : <Text style={[styles.modelNotice, { color: colors.muted }]}>No matching models. Try another search.</Text>}
             </ScrollView>
             <Pressable
-              style={[styles.modelOption, { borderColor: colors.border }]}
-              onPress={() => setModelStatus('Choose a model above or paste a direct .gguf URL below.')}>
-              <View style={[styles.modelOptionIcon, { backgroundColor: colors.accentSoft }]}>
-                <SymbolView name={{ ios: 'arrow.down.circle', android: 'download_for_offline', web: 'download' }} size={19} tintColor={colors.accent} />
-              </View>
+              style={[styles.installedModelsCard, { borderColor: colors.border, backgroundColor: colors.background }]}
+              onPress={() => { setModelVisible(false); router.push('/models'); }}>
               <View style={styles.modelOptionCopy}>
-                <Text style={[styles.modelOptionTitle, { color: colors.text }]}>Client-side download</Text>
-                <Text style={[styles.modelOptionText, { color: colors.muted }]}>Search compatible GGUF models, check their file size, and download one to this device.</Text>
+                <Text style={[styles.modelOptionTitle, { color: colors.text }]}>See all installed models</Text>
+                <Text style={[styles.modelOptionText, { color: colors.muted }]}>
+                  {downloadedModels.length ? `${downloadedModels.length} model${downloadedModels.length === 1 ? '' : 's'} downloaded on this device.` : 'Manage downloaded models on this device.'}
+                </Text>
               </View>
               <SymbolView name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }} size={16} tintColor={colors.muted} />
+            </Pressable>
+            <Pressable
+              style={[styles.installedModelsCard, { borderColor: colors.border, backgroundColor: colors.background }]}
+              onPress={() => { setModelVisible(false); router.push('/model-browser'); }}>
+              <View style={styles.modelOptionCopy}>
+                <Text style={[styles.modelOptionTitle, { color: colors.text }]}>Browse Hugging Face models</Text>
+                <Text style={[styles.modelOptionText, { color: colors.muted }]}>Search public GGUF models online.</Text>
+              </View>
+              <SymbolView name={{ ios: 'globe', android: 'language', web: 'language' }} size={16} tintColor={colors.muted} />
             </Pressable>
             <View style={[styles.directDownload, { borderColor: colors.border }]}>
               <View style={styles.modelOptionCopy}>
@@ -595,7 +797,7 @@ export default function AuraChat() {
                 <Text style={[styles.modelOptionText, { color: colors.muted }]}>Paste a direct .gguf URL. Check the file size before downloading.</Text>
               </View>
               <TextInput value={modelUrl} onChangeText={(value) => { setModelUrl(value); setModelStatus(''); }} autoCapitalize="none" autoCorrect={false} keyboardType="url" placeholder="https://…/model.gguf" placeholderTextColor={colors.muted} style={[styles.modelUrlInput, { color: colors.text, borderColor: colors.border }]} />
-              <Pressable style={[styles.modelDownloadButton, { backgroundColor: colors.accent }]} onPress={openModelUrl}><Text style={styles.modelDownloadButtonText}>Download to this device</Text></Pressable>
+              <Pressable style={[styles.modelDownloadButton, { backgroundColor: colors.accent }]} onPress={openModelUrl}><Text style={[styles.modelDownloadButtonText, { color: isDark ? '#000000' : '#FFFFFF' }]}>Download to this device</Text></Pressable>
               {modelStatus ? <Text style={[styles.modelNotice, { color: colors.muted }]}>{modelStatus}</Text> : null}
             </View>
             <Text style={[styles.modelNotice, { color: colors.muted }]}>Only download models from sources you trust. Large files may use significant storage and bandwidth.</Text>

@@ -41,14 +41,20 @@ export async function loadLocalConversations(): Promise<ApiConversation[]> {
 }
 
 export async function saveLocalConversation(messages: ApiMessage[]): Promise<ApiConversation> {
+  if (messages.length === 0) throw new Error('Cannot save an empty conversation.');
   const firstUserMessage = messages.find((message) => message.role === 'user');
   const now = Date.now();
+  const conversationId = `conversation_${now}_${Math.random().toString(36).slice(2, 8)}`;
+  const persistedMessages = messages.map((message, position) => ({
+    ...message,
+    id: `${conversationId}_message_${position}_${Math.random().toString(36).slice(2, 8)}`,
+  }));
   const fallbackConversation: ApiConversation = {
-    id: `conversation_${now}`,
+    id: conversationId,
     title: (firstUserMessage?.content || 'New conversation').slice(0, 28),
-    preview: messages[messages.length - 1].content.slice(0, 42),
+    preview: persistedMessages[persistedMessages.length - 1].content.slice(0, 42),
     updatedAt: new Date(now).toISOString(),
-    messages,
+    messages: persistedMessages,
   };
 
   if (!hasWatermelonNativeBridge()) {
@@ -64,14 +70,14 @@ export async function saveLocalConversation(messages: ApiMessage[]): Promise<Api
   const messagesCollection = database.get<Message>('messages');
   const conversation = await database.write(async () => {
     const savedConversation = await conversationsCollection.create((record) => {
-      record._raw.id = `conversation_${now}`;
+      record._raw.id = conversationId;
       record.title = (firstUserMessage?.content || 'New conversation').slice(0, 28);
-      record.preview = messages[messages.length - 1].content.slice(0, 42);
+      record.preview = persistedMessages[persistedMessages.length - 1].content.slice(0, 42);
       record.updatedAt = now;
     });
 
     await Promise.all(
-      messages.map((message, position) =>
+      persistedMessages.map((message, position) =>
         messagesCollection.create((record) => {
           record._raw.id = message.id;
           record.conversationId = savedConversation.id;
@@ -90,7 +96,7 @@ export async function saveLocalConversation(messages: ApiMessage[]): Promise<Api
     title: conversation.title,
     preview: conversation.preview,
     updatedAt: new Date(conversation.updatedAt).toISOString(),
-    messages,
+    messages: persistedMessages,
   };
 }
 

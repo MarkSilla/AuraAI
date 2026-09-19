@@ -1,6 +1,6 @@
 import { SymbolView } from 'expo-symbols';
 import { useEffect, useState, type ReactNode } from 'react';
-import { Image, Pressable, Text, View } from 'react-native';
+import { Image, Pressable, ScrollView, Text, View } from 'react-native';
 import { styles } from './styles';
 import type { AuraColors, Message } from './theme';
 
@@ -66,14 +66,20 @@ export function MessageBubble({
   message,
   colors,
   onCopy,
+  userActionsVisible = false,
+  onUserActionsChange,
+  streaming = false,
 }: {
   message: Message;
   colors: AuraColors;
   onCopy: (content: string) => void;
+  userActionsVisible?: boolean;
+  onUserActionsChange: (visible: boolean) => void;
+  streaming?: boolean;
 }) {
   const isUser = message.role === 'user';
   return (
-    <View style={[styles.messageRow, isUser ? styles.userRow : styles.assistantRow]}>
+    <View style={[styles.messageRow, isUser ? styles.userRow : styles.assistantRow, userActionsVisible && styles.userMessageRowOpen]}>
       {!isUser && <AuraMark size={28} />}
       <View style={styles.messageColumn}>
         {!isUser && (
@@ -84,11 +90,38 @@ export function MessageBubble({
           </View>
         )}
         {isUser ? (
-          <View style={[styles.bubble, { backgroundColor: colors.userBubble, shadowColor: colors.shadow }, styles.userBubble]}>
-            <Text style={[styles.messageText, { color: colors.userBubbleText }]}>{message.content}</Text>
+          <View>
+            <Pressable
+              onLongPress={() => onUserActionsChange(true)}
+              delayLongPress={350}
+              style={[styles.bubble, { backgroundColor: colors.userBubble, shadowColor: colors.shadow }, styles.userBubble]}>
+              <Text style={[styles.messageText, { color: colors.userBubbleText }]}>{message.content}</Text>
+            </Pressable>
+            {userActionsVisible && (
+              <View style={[styles.userMessageActions, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Copy message"
+                  style={styles.actionBubbleItem}
+                  onPress={() => {
+                    onUserActionsChange(false);
+                    void onCopy(message.content);
+                  }}>
+                  <SymbolView name={{ ios: 'doc.on.doc', android: 'content_copy', web: 'content_copy' }} size={16} tintColor={colors.text} />
+                  <Text style={[styles.actionBubbleText, { color: colors.text }]}>Copy</Text>
+                </Pressable>
+              </View>
+            )}
           </View>
         ) : (
-          <Text style={[styles.assistantMessageText, { color: colors.text }]}>{message.content}</Text>
+          <MarkdownMessage content={message.content} colors={colors} onCopy={onCopy} />
+        )}
+        {!isUser && streaming && (
+          <View style={styles.thinkingRow}>
+            <View style={[styles.typingDot, { backgroundColor: colors.accent }]} />
+            <View style={[styles.typingDot, { backgroundColor: colors.accent, opacity: 0.65 }]} />
+            <View style={[styles.typingDot, { backgroundColor: colors.accent, opacity: 0.35 }]} />
+          </View>
         )}
         {!isUser && (
           <Pressable
@@ -103,6 +136,130 @@ export function MessageBubble({
       </View>
     </View>
   );
+}
+
+function isTableSeparator(line: string) {
+  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
+}
+
+function parseTable(lines: string[]) {
+  const rows = lines.map((line) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim()));
+  return { headers: rows[0] || [], rows: rows.slice(2) };
+}
+
+function renderInlineMarkdown(text: string, colors: AuraColors) {
+  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <Text key={index} style={{ fontWeight: '800' }}>{part.slice(2, -2)}</Text>;
+    }
+    if (part.startsWith('*') && part.endsWith('*')) {
+      return <Text key={index} style={{ fontStyle: 'italic' }}>{part.slice(1, -1)}</Text>;
+    }
+    if (part.startsWith('`') && part.endsWith('`')) {
+      return <Text key={index} style={[styles.codeText, { color: colors.text }]}>{part.slice(1, -1)}</Text>;
+    }
+    return <Text key={index}>{part}</Text>;
+  });
+}
+
+function MarkdownMessage({
+  content,
+  colors,
+  onCopy,
+}: {
+  content: string;
+  colors: AuraColors;
+  onCopy: (content: string) => void;
+}) {
+  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  const blocks: ReactNode[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (line.trim().startsWith('```')) {
+      const language = line.trim().slice(3).trim() || 'code';
+      const codeLines: string[] = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trim().startsWith('```')) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      blocks.push(
+        <View key={`code-${index}`} style={[styles.codeBlock, { backgroundColor: colors.accentSoft, borderColor: colors.border }]}>
+          <View style={styles.codeHeader}>
+            <Text style={[styles.codeLanguage, { color: colors.muted }]}>{language}</Text>
+            <Pressable onPress={() => onCopy(codeLines.join('\n'))} style={styles.codeCopyButton}>
+              <SymbolView name={{ ios: 'doc.on.doc', android: 'content_copy', web: 'content_copy' }} size={13} tintColor={colors.muted} />
+              <Text style={[styles.copyText, { color: colors.muted }]}>Copy code</Text>
+            </Pressable>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <Text selectable style={[styles.codeText, { color: colors.text }]}>{codeLines.join('\n')}</Text>
+          </ScrollView>
+        </View>,
+      );
+      index += 1;
+      continue;
+    }
+
+    if (line.trim() && index + 1 < lines.length && isTableSeparator(lines[index + 1])) {
+      const tableLines = [line, lines[index + 1]];
+      index += 2;
+      while (index < lines.length && lines[index].includes('|') && lines[index].trim()) {
+        tableLines.push(lines[index]);
+        index += 1;
+      }
+      const table = parseTable(tableLines);
+      blocks.push(
+        <ScrollView key={`table-${index}`} horizontal showsHorizontalScrollIndicator={false} style={styles.tableScroll}>
+          <View style={[styles.table, { borderColor: colors.border }]}>
+            <View style={[styles.tableRow, { backgroundColor: colors.accentSoft }]}>
+              {table.headers.map((cell, cellIndex) => <Text key={cellIndex} style={[styles.tableCell, styles.tableHeader, { color: colors.text, borderColor: colors.border }]}>{renderInlineMarkdown(cell, colors)}</Text>)}
+            </View>
+            {table.rows.map((row, rowIndex) => (
+              <View key={rowIndex} style={styles.tableRow}>
+                {row.map((cell, cellIndex) => <Text key={cellIndex} style={[styles.tableCell, { color: colors.text, borderColor: colors.border }]}>{renderInlineMarkdown(cell, colors)}</Text>)}
+              </View>
+            ))}
+          </View>
+        </ScrollView>,
+      );
+      continue;
+    }
+
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+    if (/^\s*={3,}\s*$/.test(line)) {
+      index += 1;
+      continue;
+    }
+
+    const heading = line.match(/^\s{0,3}(#{1,3})\s+(.+)$/);
+    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+    const numbered = line.match(/^\s*(\d+)\.\s+(.+)$/);
+    blocks.push(
+      <Text
+        key={`line-${index}`}
+        style={[
+          styles.assistantMessageText,
+          heading ? styles.markdownHeading : undefined,
+          bullet || numbered ? styles.markdownListItem : undefined,
+          { color: colors.text },
+        ]}>
+        {renderInlineMarkdown(
+          heading?.[2] || (bullet ? `• ${bullet[1]}` : numbered ? `${numbered[1]}. ${numbered[2]}` : line),
+          colors,
+        )}
+      </Text>,
+    );
+    index += 1;
+  }
+
+  return <View style={styles.markdownContent}>{blocks}</View>;
 }
 
 export function TypingIndicator({ colors }: { colors: AuraColors }) {
