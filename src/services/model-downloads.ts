@@ -143,45 +143,59 @@ async function performDownload(
 
   if (Platform.OS === 'android' && nativeDownloader) {
     const fileName = modelFileName(url, fallbackName);
-    const download = await nativeDownloader.start(url, fileName);
-    let canceled = false;
-    const cancel = () => {
-      canceled = true;
-      void nativeDownloader.cancel(download.id);
-    };
-    onCancel?.(cancel);
-    trackedDownloads.set(key, { key, fileName, url, status: 'downloading', bytesWritten: 0, totalBytes: 0, cancel });
-    notifyTrackedDownloads();
-    report({ status: 'downloading', progress: 0, bytesWritten: 0, totalBytes: 0 });
+    let download: { id: number } | null = null;
     try {
-      while (!canceled) {
-        const status = await nativeDownloader.status(download.id);
-        if (status.status === 8) {
-          const uri = await nativeDownloader.complete(download.id, fileName);
-          const downloadedFile = new File(uri);
-          if (downloadedFile.uri !== destination.uri) {
-            if (destination.exists) destination.delete();
-            downloadedFile.copy(destination);
-          }
-          report({ status: 'completed', progress: 1, bytesWritten: destination.size, totalBytes: destination.size, uri: destination.uri });
-          return destination;
-        }
-        if (status.status === 16) throw new Error(`The Android download failed (${status.reason ?? 'unknown error'}).`);
-        report({
-          status: 'downloading',
-          progress: status.totalBytes > 0 ? status.bytesWritten / status.totalBytes : 0,
-          bytesWritten: status.bytesWritten,
-          totalBytes: status.totalBytes,
-        });
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
-      throw new Error('The model download was canceled.');
+      download = await nativeDownloader.start(url, fileName);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'The model download failed.';
-      report({ status: 'error', progress: 0, bytesWritten: 0, totalBytes: 0, error: message });
-      throw new Error(message);
-    } finally {
-      onCancel?.(() => undefined);
+      const message = error instanceof Error ? error.message : '';
+      if (!/unsupported path|destination/i.test(message)) {
+        throw error;
+      }
+      // Older release binaries may point DownloadManager at the app-private
+      // directory, which Android does not allow as a direct download target.
+      // Continue with expo-file-system, which writes into that directory itself.
+      download = null;
+    }
+    if (download) {
+      let canceled = false;
+      const cancel = () => {
+        canceled = true;
+        void nativeDownloader.cancel(download.id);
+      };
+      onCancel?.(cancel);
+      trackedDownloads.set(key, { key, fileName, url, status: 'downloading', bytesWritten: 0, totalBytes: 0, cancel });
+      notifyTrackedDownloads();
+      report({ status: 'downloading', progress: 0, bytesWritten: 0, totalBytes: 0 });
+      try {
+        while (!canceled) {
+          const status = await nativeDownloader.status(download.id);
+          if (status.status === 8) {
+            const uri = await nativeDownloader.complete(download.id, fileName);
+            const downloadedFile = new File(uri);
+            if (downloadedFile.uri !== destination.uri) {
+              if (destination.exists) destination.delete();
+              downloadedFile.copy(destination);
+            }
+            report({ status: 'completed', progress: 1, bytesWritten: destination.size, totalBytes: destination.size, uri: destination.uri });
+            return destination;
+          }
+          if (status.status === 16) throw new Error(`The Android download failed (${status.reason ?? 'unknown error'}).`);
+          report({
+            status: 'downloading',
+            progress: status.totalBytes > 0 ? status.bytesWritten / status.totalBytes : 0,
+            bytesWritten: status.bytesWritten,
+            totalBytes: status.totalBytes,
+          });
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+        throw new Error('The model download was canceled.');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'The model download failed.';
+        report({ status: 'error', progress: 0, bytesWritten: 0, totalBytes: 0, error: message });
+        throw new Error(message);
+      } finally {
+        onCancel?.(() => undefined);
+      }
     }
   }
 
