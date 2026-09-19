@@ -61,6 +61,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           echo "$KEYSTORE_BASE64" | base64 --decode > "$GITHUB_WORKSPACE/android/aura-release.keystore"
+          printf '\n' >> "$GITHUB_WORKSPACE/android/gradle.properties"
           {
             echo "AURA_RELEASE_STORE_FILE=$GITHUB_WORKSPACE/android/aura-release.keystore"
             echo "AURA_RELEASE_STORE_PASSWORD=$KEYSTORE_PASSWORD"
