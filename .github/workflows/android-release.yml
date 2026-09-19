@@ -23,11 +23,18 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - name: Install JavaScript dependencies
         run: npm install
+
+      - name: Verify Node and native module resolution
+        run: |
+          node --version
+          npm --version
+          node --print "require.resolve('react-native/package.json')"
+          node --print "require.resolve('llama.rn/package.json')"
 
       - name: Require production signing secrets
         env:
@@ -61,7 +68,7 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
+          ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: Upload release APK
         uses: actions/upload-artifact@v4
