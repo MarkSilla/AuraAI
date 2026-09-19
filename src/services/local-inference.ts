@@ -102,6 +102,9 @@ export async function unloadLocalModel() {
 }
 
 function getLlamaModule(): LlamaModule {
+  if (Platform.OS === 'web') {
+    throw new Error('Local GGUF models are not supported in the browser. Install the Android release APK to use downloaded models.');
+  }
   try {
     return require('llama.rn') as LlamaModule;
   } catch {
@@ -115,18 +118,31 @@ export async function generateLocalResponse(
   thinkingLevel: ThinkingLevel = 'medium',
   onToken?: (text: string) => void,
   onStatus?: (status: GenerationStatus) => void,
+  maxResponseTokens = OUTPUT_TOKENS,
 ) {
   const requestId = ++generationId;
   const settings = thinkingSettings[thinkingLevel];
   const contextSize = getContextSize(history);
   if (loadedModelUri !== modelUri || loadedContextSize !== contextSize) {
     await context?.release?.();
-    context = await getLlamaModule().initLlama({
-      model: modelUri,
-      use_mlock: false,
-      n_ctx: contextSize,
-      n_gpu_layers: Platform.OS === 'web' ? 0 : 99,
-    });
+    context = null;
+    loadedModelUri = null;
+    loadedContextSize = null;
+    try {
+      context = await getLlamaModule().initLlama({
+        model: modelUri,
+        use_mlock: false,
+        n_ctx: contextSize,
+        // CPU loading is more reliable across Android devices than forcing GPU layers.
+        n_gpu_layers: 0,
+      });
+    } catch (error) {
+      throw new Error(
+        error instanceof Error
+          ? `The downloaded model could not be loaded: ${error.message}`
+          : 'The downloaded model could not be loaded. Try a smaller GGUF model.',
+      );
+    }
     loadedModelUri = modelUri;
     loadedContextSize = contextSize;
   }
@@ -155,7 +171,7 @@ export async function generateLocalResponse(
     result = await context.completion(
       {
         messages: nextMessages,
-        n_predict: OUTPUT_TOKENS,
+        n_predict: maxResponseTokens,
         temperature: settings.temperature,
         stop: stopWords,
       },
@@ -167,7 +183,7 @@ export async function generateLocalResponse(
         }
       },
     );
-    const reachedLimit = result.timings?.predicted_n === OUTPUT_TOKENS;
+    const reachedLimit = result.timings?.predicted_n === maxResponseTokens;
     if (!reachedLimit || continuation >= MAX_CONTINUATIONS) break;
     continuation += 1;
     nextMessages = [

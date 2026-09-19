@@ -47,6 +47,7 @@ const TOOL_ICONS = {
   Web: { ios: 'globe', android: 'language', web: 'language' },
   Code: { ios: 'chevron.left.forwardslash.chevron.right', android: 'code', web: 'code' },
 } as const;
+const BUBBLE_COLORS = ['#202123', '#2563EB', '#7C3AED', '#DB2777', '#059669', '#D97706', '#FDE68A', '#FFFFFF'];
 
 function cleanConversationPreview(text: string) {
   return text
@@ -62,11 +63,13 @@ export default function AuraChat() {
   const systemScheme = useColorScheme();
   const [themeMode, setThemeMode] = useState<'light' | 'dark'>(systemScheme === 'dark' ? 'dark' : 'light');
   const isDark = themeMode === 'dark';
-  const colors = palette[themeMode];
   const [messages, setMessages] = useState<Message[]>([]);
   const [streamingReply, setStreamingReply] = useState<Message | null>(null);
   const [draft, setDraft] = useState('');
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>('medium');
+  const [maxResponseTokens, setMaxResponseTokens] = useState(2048);
+  const [enterToSend, setEnterToSend] = useState(true);
+  const [userBubbleColor, setUserBubbleColor] = useState('#202123');
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [generationStatus, setGenerationStatus] = useState<'compacting' | 'generating'>('generating');
@@ -100,6 +103,7 @@ export default function AuraChat() {
   const modelCancelActions = useRef<Record<string, () => void>>({});
   const modelArrowRotation = useRef(new Animated.Value(0)).current;
   const activeModel = downloadedModels.find((file) => file.uri === activeModelUri);
+  const colors = { ...palette[themeMode], userBubble: userBubbleColor };
   const scrollRef = useRef<ScrollView>(null);
   const shouldAutoScrollRef = useRef(true);
   const sendScale = useRef(new Animated.Value(1)).current;
@@ -142,6 +146,9 @@ export default function AuraChat() {
       const settings = loadAppSettings();
       setDownloadedModels(savedModels);
       setThinkingLevel(settings.thinkingLevel || 'medium');
+      setMaxResponseTokens(settings.maxResponseTokens || 2048);
+      setEnterToSend(settings.enterToSend ?? true);
+      setUserBubbleColor(settings.userBubbleColor || (settings.themeMode === 'dark' ? '#123A63' : '#202123'));
       setThemeMode(settings.themeMode || (systemScheme === 'dark' ? 'dark' : 'light'));
       setPinnedConversationIds(settings.pinnedConversationIds || []);
       const savedUri = settings.activeModelUri && savedModels.some((file) => file.uri === settings.activeModelUri)
@@ -149,6 +156,7 @@ export default function AuraChat() {
         : savedModels[0]?.uri || null;
       setActiveModelUri(savedUri);
       setSettingsLoaded(true);
+      if (!settings.hasSeenTutorial) router.push('/tutorial');
       const previous = canceled[0];
       if (previous) {
         Alert.alert(
@@ -167,8 +175,8 @@ export default function AuraChat() {
   }, []);
   useEffect(() => {
     if (!settingsLoaded) return;
-    saveAppSettings({ ...loadAppSettings(), activeModelUri, thinkingLevel, themeMode, pinnedConversationIds });
-  }, [activeModelUri, pinnedConversationIds, settingsLoaded, thinkingLevel, themeMode]);
+    saveAppSettings({ ...loadAppSettings(), activeModelUri, thinkingLevel, themeMode, pinnedConversationIds, maxResponseTokens, enterToSend, userBubbleColor });
+  }, [activeModelUri, enterToSend, maxResponseTokens, pinnedConversationIds, settingsLoaded, thinkingLevel, themeMode, userBubbleColor]);
   useFocusEffect(
     useCallback(() => {
       void reconcileBackgroundDownloads().then(() => {
@@ -213,6 +221,12 @@ export default function AuraChat() {
   };
   const newConversation = async () => {
     try {
+      await stopLocalResponse();
+    } catch (error) {
+      Alert.alert('Unable to start new chat', error instanceof Error ? error.message : 'The current response could not be stopped.');
+      return;
+    }
+    try {
       await saveConversation();
     } catch (error) {
       Alert.alert('Conversation save failed', error instanceof Error ? error.message : 'AURA could not save this conversation.');
@@ -249,6 +263,7 @@ export default function AuraChat() {
           setStreamingReply({ id: assistantMessageId, role: 'assistant', content: streamedText });
         },
         (status) => setGenerationStatus(status),
+        maxResponseTokens,
       );
       setMessages((current) => {
         if (!response.trim()) return current.filter((message) => message.id !== assistantMessageId);
@@ -604,7 +619,7 @@ export default function AuraChat() {
         </View>
         <View style={[styles.composerArea, { backgroundColor: colors.background, paddingBottom: Math.max(insets.bottom, 10) }]}>
           <View style={[styles.composer, { backgroundColor: colors.surfaceRaised, borderColor: colors.borderStrong }]}>
-           <TextInput value={draft} onChangeText={setDraft} placeholder="Ask AURA anything..." placeholderTextColor={colors.muted} multiline maxLength={2000} style={[styles.input, { color: colors.text }]} onSubmitEditing={() => sendMessage()} blurOnSubmit={false} accessibilityLabel="Message AURA" />
+           <TextInput value={draft} onChangeText={setDraft} placeholder="Ask AURA anything..." placeholderTextColor={colors.muted} multiline maxLength={2000} style={[styles.input, { color: colors.text }]} onSubmitEditing={() => { if (enterToSend) void sendMessage(); }} blurOnSubmit={enterToSend} accessibilityLabel="Message AURA" />
            <View style={styles.composerBottomRow}>
              <IconButton label="Open tools" onPress={() => setToolsVisible(true)}><Text style={[styles.plus, { color: colors.accent }]}>+</Text></IconButton>
              <Pressable
@@ -705,7 +720,8 @@ export default function AuraChat() {
         </View>
       </Modal>
       <Modal visible={settingsVisible} transparent animationType="slide" onRequestClose={() => setSettingsVisible(false)}>
-        <Pressable style={styles.sheetBackdrop} onPress={() => setSettingsVisible(false)}>
+        <View style={styles.sheetBackdrop}>
+          <Pressable style={styles.sheetDismissArea} onPress={() => setSettingsVisible(false)} />
           <View style={[styles.settingsSheet, { backgroundColor: colors.surfaceRaised }]}>
             <View style={styles.settingsHeader}><View><Text style={[styles.sheetTitle, { color: colors.text }]}>Settings</Text><Text style={[styles.settingsSubtitle, { color: colors.muted }]}>Make AURA work the way you do.</Text></View><IconButton label="Close settings" onPress={() => setSettingsVisible(false)}><SymbolView name={{ ios: 'xmark', android: 'close', web: 'close' }} size={18} tintColor={colors.muted} /></IconButton></View>
             <ScrollView showsVerticalScrollIndicator={false}>
@@ -713,19 +729,29 @@ export default function AuraChat() {
               <View style={[styles.settingsCard, { borderColor: colors.border }]}>
                 <View style={styles.settingRow}><View style={styles.settingCopy}><Text style={[styles.settingTitle, { color: colors.text }]}>Auto-scroll</Text><Text style={[styles.settingDescription, { color: colors.muted }]}>Keep the latest message in view.</Text></View><Switch value={autoScroll} onValueChange={setAutoScroll} /></View>
                 <View style={[styles.settingInline, { borderTopColor: colors.border }]}><View style={styles.settingCopy}><Text style={[styles.settingTitle, { color: colors.text }]}>Typing indicator</Text><Text style={[styles.settingDescription, { color: colors.muted }]}>Show AURA’s response status.</Text></View><Switch value={showTyping} onValueChange={setShowTyping} /></View>
+                <View style={[styles.settingInline, { borderTopColor: colors.border }]}><View style={styles.settingCopy}><Text style={[styles.settingTitle, { color: colors.text }]}>Enter to send</Text><Text style={[styles.settingDescription, { color: colors.muted }]}>Turn off to use Enter for a new line.</Text></View><Switch value={enterToSend} onValueChange={setEnterToSend} /></View>
+              </View>
+              <Text style={[styles.settingsSection, { color: colors.muted }]}>RESPONSE</Text>
+              <View style={[styles.settingsCard, { borderColor: colors.border }]}>
+                <View style={styles.settingRow}><View style={styles.settingCopy}><Text style={[styles.settingTitle, { color: colors.text }]}>Maximum response length</Text><Text style={[styles.settingDescription, { color: colors.muted }]}>More tokens allow longer answers but use more memory.</Text></View><Text style={[styles.settingValue, { color: colors.text }]}>{maxResponseTokens}</Text></View>
+                <View style={[styles.settingInline, { borderTopColor: colors.border, flexDirection: 'row', gap: 8 }]}>
+                  {[1024, 2048, 4096].map((value) => <Pressable key={value} onPress={() => setMaxResponseTokens(value)} style={[styles.settingChoice, { borderColor: colors.border, backgroundColor: maxResponseTokens === value ? colors.accent : 'transparent' }]}><Text style={{ color: maxResponseTokens === value ? (isDark ? '#000' : '#FFF') : colors.text, fontSize: 11, fontWeight: '700' }}>{value}</Text></Pressable>)}
+                </View>
               </View>
               <Text style={[styles.settingsSection, { color: colors.muted }]}>APPEARANCE</Text>
               <View style={[styles.settingsCard, { borderColor: colors.border }]}>
                 <View style={styles.settingRow}><View style={styles.settingCopy}><Text style={[styles.settingTitle, { color: colors.text }]}>Theme</Text><Text style={[styles.settingDescription, { color: colors.muted }]}>Choose a comfortable reading mode.</Text></View><Pressable style={styles.settingValueButton} onPress={() => setThemeMode(themeMode === 'dark' ? 'light' : 'dark')}><Text style={[styles.settingValue, { color: colors.text }]}>{themeMode === 'dark' ? 'Dark' : 'Light'}</Text><SymbolView name={{ ios: 'chevron.up.chevron.down', android: 'unfold_more', web: 'unfold_more' }} size={14} tintColor={colors.muted} /></Pressable></View>
+                <View style={[styles.settingInline, { borderTopColor: colors.border }]}><View style={styles.settingCopy}><Text style={[styles.settingTitle, { color: colors.text }]}>Your bubble color</Text><Text style={[styles.settingDescription, { color: colors.muted }]}>Pick a cute color for your messages.</Text></View><View style={styles.colorChoices}>{BUBBLE_COLORS.map((color) => <Pressable key={`user-${color}`} accessibilityLabel={`Set your bubble color ${color}`} onPress={() => setUserBubbleColor(color)} style={[styles.colorChoice, { backgroundColor: color, borderColor: userBubbleColor === color ? colors.text : colors.border }, userBubbleColor === color && styles.colorChoiceSelected]} />)}</View></View>
               </View>
               <Text style={[styles.settingsSection, { color: colors.muted }]}>MODEL</Text>
               <View style={[styles.settingsCard, { borderColor: colors.border }]}><View style={styles.settingRow}><View style={styles.settingCopy}><Text style={[styles.settingTitle, { color: colors.text }]}>Active model</Text><Text style={[styles.settingDescription, { color: colors.muted }]}>{activeModel?.name || configuredModel || 'No model connected'}</Text></View></View><View style={[styles.settingInline, { borderTopColor: colors.border }]}><Pressable onPress={() => { setSettingsVisible(false); setModelVisible(true); }}><Text style={[styles.settingValue, { color: colors.text }]}>Manage models</Text></Pressable></View></View>
               <Text style={[styles.settingsSection, { color: colors.muted }]}>DATA</Text>
               <View style={[styles.settingsCard, { borderColor: colors.border }]}><Pressable style={styles.settingRow} onPress={clearConversation}><View style={styles.settingCopy}><Text style={[styles.settingTitle, { color: colors.text }]}>Clear current conversation</Text><Text style={[styles.settingDescription, { color: colors.muted }]}>Remove messages from this screen.</Text></View><SymbolView name={{ ios: 'trash', android: 'delete_outline', web: 'delete' }} size={17} tintColor={colors.muted} /></Pressable></View>
+              <View style={[styles.settingsCard, { borderColor: colors.border, marginTop: 12 }]}><Pressable style={styles.settingRow} onPress={() => { setSettingsVisible(false); router.push('/tutorial'); }}><View style={styles.settingCopy}><Text style={[styles.settingTitle, { color: colors.text }]}>View tutorial again</Text><Text style={[styles.settingDescription, { color: colors.muted }]}>Review how to download a model and chat with AURA.</Text></View><SymbolView name={{ ios: 'book', android: 'menu_book', web: 'menu_book' }} size={17} tintColor={colors.muted} /></Pressable></View>
               <Text style={[styles.aboutNote, { color: colors.muted }]}>AURA keeps your conversations on this device when local storage is available.</Text>
             </ScrollView>
           </View>
-        </Pressable>
+        </View>
       </Modal>
       <Modal visible={modelVisible} transparent animationType="slide" onRequestClose={() => setModelVisible(false)}>
         <Pressable style={styles.sheetBackdrop} onPress={() => setModelVisible(false)}>

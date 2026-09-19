@@ -34,7 +34,7 @@ export type TrackedDownload = {
   key: string;
   fileName: string;
   url: string;
-  status: 'downloading';
+  status: 'queued' | 'downloading';
   bytesWritten: number;
   totalBytes: number;
   cancel: () => void;
@@ -42,6 +42,16 @@ export type TrackedDownload = {
 
 const trackedDownloads = new Map<string, TrackedDownload>();
 const downloadListeners = new Set<(downloads: TrackedDownload[]) => void>();
+const queuedDownloads: Array<{
+  key: string;
+  url: string;
+  fallbackName: string;
+  onProgress: (progress: ModelDownloadProgress) => void;
+  onCancel?: (cancel: () => void) => void;
+  resolve: (file: File) => void;
+  reject: (error: Error) => void;
+}> = [];
+let processingQueue = false;
 
 function notifyTrackedDownloads() {
   const downloads = [...trackedDownloads.values()];
@@ -55,7 +65,18 @@ export function subscribeTrackedDownloads(listener: (downloads: TrackedDownload[
 }
 
 export function cancelTrackedDownload(key: string) {
-  trackedDownloads.get(key)?.cancel();
+  const active = trackedDownloads.get(key);
+  if (active?.status === 'downloading') {
+    active.cancel();
+    return;
+  }
+  const index = queuedDownloads.findIndex((item) => item.key === key);
+  if (index >= 0) {
+    const [queued] = queuedDownloads.splice(index, 1);
+    trackedDownloads.delete(key);
+    notifyTrackedDownloads();
+    queued.reject(new Error('The model download was canceled.'));
+  }
 }
 
 export async function listBackgroundDownloads() {
@@ -92,7 +113,7 @@ export function listDownloadedModels() {
   return modelsDirectory.list().filter((item): item is File => item instanceof File && item.name.toLowerCase().endsWith('.gguf'));
 }
 
-export async function downloadModel(
+async function performDownload(
   url: string,
   fallbackName: string,
   onProgress: (progress: ModelDownloadProgress) => void,
@@ -113,9 +134,6 @@ export async function downloadModel(
         trackedDownloads.set(key, { ...existing, bytesWritten: progress.bytesWritten, totalBytes: progress.totalBytes });
         notifyTrackedDownloads();
       }
-    } else {
-      trackedDownloads.delete(key);
-      notifyTrackedDownloads();
     }
   };
   if (destination.exists) {
@@ -140,9 +158,13 @@ export async function downloadModel(
         const status = await nativeDownloader.status(download.id);
         if (status.status === 8) {
           const uri = await nativeDownloader.complete(download.id, fileName);
-          const file = new File(uri);
-          report({ status: 'completed', progress: 1, bytesWritten: file.size, totalBytes: file.size, uri: file.uri });
-          return file;
+          const downloadedFile = new File(uri);
+          if (downloadedFile.uri !== destination.uri) {
+            if (destination.exists) destination.delete();
+            downloadedFile.copy(destination);
+          }
+          report({ status: 'completed', progress: 1, bytesWritten: destination.size, totalBytes: destination.size, uri: destination.uri });
+          return destination;
         }
         if (status.status === 16) throw new Error(`The Android download failed (${status.reason ?? 'unknown error'}).`);
         report({
@@ -193,6 +215,61 @@ export async function downloadModel(
     throw new Error(message);
   } finally {
     onCancel?.(() => undefined);
+  }
+}
+
+export function downloadModel(
+  url: string,
+  fallbackName: string,
+  onProgress: (progress: ModelDownloadProgress) => void,
+  onCancel?: (cancel: () => void) => void,
+) {
+  const key = modelFileName(url, fallbackName);
+  if (trackedDownloads.has(key) || queuedDownloads.some((item) => item.key === key)) {
+    return Promise.reject(new Error('This model is already downloading.'));
+  }
+  return new Promise<File>((resolve, reject) => {
+    const queuedCancel = () => cancelTrackedDownload(key);
+    queuedDownloads.push({ key, url, fallbackName, onProgress, onCancel, resolve, reject });
+    trackedDownloads.set(key, {
+      key,
+      fileName: key,
+      url,
+      status: 'queued',
+      bytesWritten: 0,
+      totalBytes: 0,
+      cancel: queuedCancel,
+    });
+    notifyTrackedDownloads();
+    onCancel?.(queuedCancel);
+    void processDownloadQueue();
+  });
+}
+
+async function processDownloadQueue() {
+  if (processingQueue) return;
+  processingQueue = true;
+  try {
+    while (queuedDownloads.length > 0) {
+      const item = queuedDownloads.shift();
+      if (!item) continue;
+      const current = trackedDownloads.get(item.key);
+      if (current?.status === 'queued') {
+        trackedDownloads.delete(item.key);
+        notifyTrackedDownloads();
+      }
+      try {
+        const file = await performDownload(item.url, item.fallbackName, item.onProgress, item.onCancel);
+        item.resolve(file);
+      } catch (error) {
+        item.reject(error instanceof Error ? error : new Error('The model download failed.'));
+      } finally {
+        trackedDownloads.delete(item.key);
+        notifyTrackedDownloads();
+      }
+    }
+  } finally {
+    processingQueue = false;
   }
 }
 

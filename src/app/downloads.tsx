@@ -52,9 +52,9 @@ export default function DownloadsScreen() {
         {visibleDownloads.length === 0 ? <Text style={[styles.empty, { color: colors.muted }]}>No active model downloads.</Text> : visibleDownloads.map((download) => {
           const progress = download.totalBytes > 0 ? download.bytesWritten / download.totalBytes : 0;
           return (
-            <View key={download.id} style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View key={'key' in download ? download.key : download.id} style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               <Text numberOfLines={2} style={[styles.fileName, { color: colors.text }]}>{download.fileName}</Text>
-              <Text style={[styles.meta, { color: colors.muted }]}>{download.totalBytes > 0 ? `${Math.round(progress * 100)}% downloaded` : 'Preparing download…'}</Text>
+              <Text style={[styles.meta, { color: colors.muted }]}>{'status' in download && download.status === 'queued' ? 'Queued — waiting for the current download' : download.totalBytes > 0 ? `${Math.round(progress * 100)}% downloaded` : 'Preparing download…'}</Text>
               <View style={[styles.track, { backgroundColor: colors.border }]}><View style={[styles.fill, { backgroundColor: colors.accent, width: `${Math.min(100, progress * 100)}%` }]} /></View>
               <Pressable style={[styles.cancel, { borderColor: colors.border }]} onPress={() => 'key' in download ? cancelTrackedDownload(download.key) : void cancelBackgroundDownload(download.id).then(refresh)}>
                 <Text style={[styles.cancelText, { color: colors.text }]}>Cancel download</Text>

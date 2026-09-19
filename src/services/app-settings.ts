@@ -1,10 +1,14 @@
 import { File, Paths } from 'expo-file-system';
 
-type AppSettings = {
+export type AppSettings = {
   activeModelUri?: string | null;
   thinkingLevel?: 'low' | 'medium' | 'high';
   themeMode?: 'light' | 'dark';
   pinnedConversationIds?: string[];
+  maxResponseTokens?: number;
+  enterToSend?: boolean;
+  userBubbleColor?: string;
+  hasSeenTutorial?: boolean;
 };
 
 const settingsFile = new File(Paths.document, 'aura-settings.json');

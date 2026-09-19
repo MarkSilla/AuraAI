@@ -4,8 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useColorScheme } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { downloadModel } from '@/services/model-downloads';
-import { formatModelSize, getHuggingFaceFileSize, getHuggingFaceFileUrl, searchHuggingFaceModels, type HuggingFaceModel } from '@/services/huggingface-models';
+import { cancelTrackedDownload, downloadModel, subscribeTrackedDownloads, type TrackedDownload } from '@/services/model-downloads';
+import { formatModelSize, getHuggingFaceFileSize, getHuggingFaceFileUrl, isLoadableGgufFile, searchHuggingFaceModels, type HuggingFaceModel } from '@/services/huggingface-models';
 import { estimateModelCompatibility, formatMemory, getDeviceResources, type DeviceResources } from '@/services/model-compatibility';
 
 export default function ModelBrowserScreen() {
@@ -24,12 +24,11 @@ export default function ModelBrowserScreen() {
   const [models, setModels] = useState<HuggingFaceModel[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [downloading, setDownloading] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
+  const [trackedDownloads, setTrackedDownloads] = useState<TrackedDownload[]>([]);
   const [resources, setResources] = useState<DeviceResources | null>(null);
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
   const sizeAttempts = useRef(new Set<string>());
-  const cancelActions = useRef(new Map<string, () => void>());
   const canceledDownloads = useRef(new Set<string>());
 
   const search = async () => {
@@ -47,6 +46,13 @@ export default function ModelBrowserScreen() {
   useEffect(() => {
     void search();
     void getDeviceResources().then(setResources);
+    return subscribeTrackedDownloads((downloads) => {
+      setTrackedDownloads(downloads);
+      const active = downloads.find((download) => download.status === 'downloading');
+      if (active) {
+        setProgress(active.totalBytes > 0 ? active.bytesWritten / active.totalBytes : 0);
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -77,9 +83,10 @@ export default function ModelBrowserScreen() {
 
   const download = async (model: HuggingFaceModel, fileName: string, fileSize?: number) => {
     const key = `${model.id}/${fileName}`;
-    if (downloading === key) {
+    const tracked = trackedDownloads.find((item) => item.fileName === fileName.split('/').pop());
+    if (tracked) {
       canceledDownloads.current.add(key);
-      cancelActions.current.get(key)?.();
+      cancelTrackedDownload(tracked.key);
       return;
     }
     const compatibility = resources
@@ -99,21 +106,17 @@ export default function ModelBrowserScreen() {
       });
       if (!confirmed) return;
     }
-    setDownloading(key);
     setProgress(0);
     try {
       await downloadModel(
         getHuggingFaceFileUrl(model.id, fileName),
         `${model.id.split('/').pop()}-${fileName.split('/').pop()}`,
         (next) => setProgress(next.progress),
-        (cancel) => cancelActions.current.set(key, cancel),
       );
     } catch (downloadError) {
       setError(canceledDownloads.current.has(key) ? 'Download canceled.' : downloadError instanceof Error ? downloadError.message : 'The model download failed.');
     } finally {
-      cancelActions.current.delete(key);
       canceledDownloads.current.delete(key);
-      setDownloading(null);
     }
   };
 
@@ -154,7 +157,7 @@ export default function ModelBrowserScreen() {
       <ScrollView contentContainerStyle={styles.content}>
         {!loading && !error && models.length === 0 && <Text style={[styles.notice, { color: colors.muted }]}>No compatible GGUF models found.</Text>}
         {models.map((model) => {
-          const files = (model.siblings || []).filter((file) => file.name.toLowerCase().endsWith('.gguf'));
+          const files = (model.siblings || []).filter((file) => isLoadableGgufFile(file.name));
           const expanded = expandedModels.has(model.id);
           const tags = (model.tags || []).map((tag) => tag.toLowerCase());
           const hasVision = tags.some((tag) => /vision|image|multimodal|visual/.test(tag)) || /vision|vl|visual/i.test(model.id);
@@ -193,16 +196,18 @@ export default function ModelBrowserScreen() {
               </View>}
               {files.slice(0, 6).map((file) => {
                 const key = `${model.id}/${file.name}`;
-                const active = downloading === key;
+                const tracked = trackedDownloads.find((item) => item.fileName === file.name);
+                const active = tracked?.status === 'downloading';
+                const queued = tracked?.status === 'queued';
                 const compatibility = resources ? estimateModelCompatibility(model.id, file.name, file.size, resources) : null;
                 return (
-                  <Pressable key={file.name} disabled={downloading !== null && !active} onPress={() => void download(model, file.name, file.size)} style={[styles.fileRow, { borderTopColor: colors.border, opacity: downloading && !active ? 0.55 : 1 }]}>
+                  <Pressable key={file.name} onPress={() => void download(model, file.name, file.size)} style={[styles.fileRow, { borderTopColor: colors.border, opacity: queued ? 0.7 : 1 }]}>
                     <View style={styles.fileCopy}>
                       <Text numberOfLines={2} style={[styles.fileName, { color: colors.text }]}>{file.name}</Text>
                       <Text style={[styles.meta, { color: colors.muted }]}>{formatModelSize(file.size)}</Text>
                       {compatibility && <Text style={[styles.compatibility, { color: compatibility.status === 'compatible' ? '#2E8B57' : compatibility.status === 'unsupported' || compatibility.status === 'not-recommended' ? '#C25E5E' : '#B07A20' }]}>{compatibility.label}</Text>}
                     </View>
-                    <Text style={[styles.downloadLabel, { color: colors.text }]}>{active ? `Cancel ${Math.round(progress * 100)}%` : 'Download'}</Text>
+                    <Text style={[styles.downloadLabel, { color: colors.text }]}>{active ? `Cancel ${Math.round(progress * 100)}%` : queued ? 'Queued · Cancel' : 'Download'}</Text>
                     {active && <ActivityIndicator size="small" color={colors.accent} />}
                   </Pressable>
                 );

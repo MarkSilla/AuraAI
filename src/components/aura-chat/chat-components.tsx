@@ -4,6 +4,14 @@ import { Image, Pressable, ScrollView, Text, View } from 'react-native';
 import { styles } from './styles';
 import type { AuraColors, Message } from './theme';
 
+function getBubbleTextColor(color: string, fallback: string) {
+  const hex = color.replace('#', '');
+  if (!/^[0-9a-f]{6}$/i.test(hex)) return fallback;
+  const [red, green, blue] = [0, 2, 4].map((index) => Number.parseInt(hex.slice(index, index + 2), 16));
+  const luminance = (0.299 * red) + (0.587 * green) + (0.114 * blue);
+  return luminance > 186 ? '#202123' : '#FFFFFF';
+}
+
 export function AuraMark({ size = 44 }: { size?: number }) {
   return (
     <View style={[styles.auraMark, { width: size, height: size, borderRadius: size / 3.5 }]}>
@@ -78,6 +86,7 @@ export function MessageBubble({
   streaming?: boolean;
 }) {
   const isUser = message.role === 'user';
+  const userBubbleTextColor = getBubbleTextColor(colors.userBubble, colors.userBubbleText);
   return (
     <View style={[styles.messageRow, isUser ? styles.userRow : styles.assistantRow, userActionsVisible && styles.userMessageRowOpen]}>
       {!isUser && <AuraMark size={28} />}
@@ -95,7 +104,7 @@ export function MessageBubble({
               onLongPress={() => onUserActionsChange(true)}
               delayLongPress={350}
               style={[styles.bubble, { backgroundColor: colors.userBubble, shadowColor: colors.shadow }, styles.userBubble]}>
-              <Text style={[styles.messageText, { color: colors.userBubbleText }]}>{message.content}</Text>
+              <Text style={[styles.messageText, { color: userBubbleTextColor }]}>{message.content}</Text>
             </Pressable>
             {userActionsVisible && (
               <View style={[styles.userMessageActions, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>

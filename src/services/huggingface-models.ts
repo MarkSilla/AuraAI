@@ -48,6 +48,13 @@ export function getHuggingFaceFileUrl(modelId: string, fileName: string) {
   return `https://huggingface.co/${modelId}/resolve/main/${fileName.split('/').map(encodeURIComponent).join('/')}?download=true`;
 }
 
+export function isLoadableGgufFile(fileName: string) {
+  const normalized = fileName.toLowerCase();
+  if (!normalized.endsWith('.gguf')) return false;
+  if (normalized.includes('mmproj') || normalized.includes('tokenizer')) return false;
+  return !/-\d{5}-of-\d{5}\.gguf$/i.test(normalized);
+}
+
 export async function getHuggingFaceFileSize(modelId: string, fileName: string) {
   const response = await fetch(getHuggingFaceFileUrl(modelId, fileName), { method: 'HEAD' });
   if (!response.ok) return undefined;
