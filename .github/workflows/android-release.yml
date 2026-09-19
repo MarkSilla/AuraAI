@@ -23,7 +23,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
 
       - name: Install JavaScript dependencies
@@ -35,6 +35,8 @@ jobs:
           npm --version
           node --print "require.resolve('react-native/package.json')"
           node --print "require.resolve('llama.rn/package.json')"
+          npx expo config --type public
+          npx expo-modules-autolinking resolve --platform android
 
       - name: Require production signing secrets
         env:
