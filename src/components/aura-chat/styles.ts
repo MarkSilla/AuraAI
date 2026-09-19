@@ -262,6 +262,7 @@ export const styles = StyleSheet.create({
   modelDownloadLabel: { fontSize: 10, fontWeight: '800', minWidth: 48, textAlign: 'right' },
   modelOptionTitle: { fontSize: 14, fontWeight: '700' },
   modelOptionText: { fontSize: 12, lineHeight: 17, marginTop: 3 },
+  modelRecommended: { fontSize: 9, fontWeight: '800', letterSpacing: 0.7, marginTop: 4 },
   modelSearchBox: { height: 43, borderWidth: 1, borderRadius: 12, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 11, marginBottom: 12 },
   modelSearchInput: { flex: 1, fontSize: 13, paddingHorizontal: 8, paddingVertical: 0 },
   modelSectionLabel: { fontSize: 10, fontWeight: '800', letterSpacing: 1.1, marginBottom: 8 },

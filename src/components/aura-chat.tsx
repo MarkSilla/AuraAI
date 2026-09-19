@@ -774,7 +774,7 @@ export default function AuraChat() {
               {filteredModels.length > 0 ? filteredModels.map((model) => (
                 <Pressable
                   key={model.name}
-                  style={({ pressed }) => [styles.modelCatalogItem, { borderColor: colors.border, backgroundColor: colors.background }, pressed && styles.pressed]}
+                  style={({ pressed }) => [styles.modelCatalogItem, { borderColor: model.recommended ? '#D97706' : colors.border, backgroundColor: colors.background }, pressed && styles.pressed]}
                   onPress={() => startModelDownload(model.url, model.name)}>
                   <View style={[styles.modelOptionIcon, { backgroundColor: colors.accentSoft }]}>
                     <SymbolView name={{ ios: 'cpu', android: 'memory', web: 'memory' }} size={18} tintColor={colors.text} />
@@ -782,6 +782,7 @@ export default function AuraChat() {
                   <View style={styles.modelOptionCopy}>
                     <Text style={[styles.modelOptionTitle, { color: colors.text }]}>{model.name}</Text>
                     <Text style={[styles.modelOptionText, { color: colors.muted }]}>GGUF · {model.source}</Text>
+                    {model.recommended && <Text style={[styles.modelRecommended, { color: '#B45309' }]}>RECOMMENDED · SMALL</Text>}
                   </View>
                   <View style={[styles.modelSizeBadge, { backgroundColor: colors.accentSoft }]}>
                     <Text style={[styles.modelSizeText, { color: colors.text }]}>{model.size}</Text>
