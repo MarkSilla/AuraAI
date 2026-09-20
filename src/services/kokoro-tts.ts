@@ -38,9 +38,13 @@ function loadOnnxRuntime(): typeof Ort {
   try {
     // ONNX Runtime is a native module and is unavailable in Expo Go.
     // Load it only when speech generation is requested so the chat can still open.
-    return require('onnxruntime-react-native') as typeof Ort;
+    const runtime = require('onnxruntime-react-native') as typeof Ort;
+    if (!runtime.InferenceSession || !runtime.Tensor) {
+      throw new Error('The ONNX Runtime native module is missing from this Android build. Rebuild the development or release APK after installing the native module.');
+    }
+    return runtime;
   } catch {
-    throw new Error('Offline Kokoro speech needs an Android/iOS development build with ONNX Runtime installed. Expo Go cannot load it.');
+    throw new Error('Offline Kokoro speech needs an Android/iOS build with ONNX Runtime included. Expo Go cannot load it; rebuild the APK after installing the native module.');
   }
 }
 
@@ -130,6 +134,18 @@ export async function synthesizeKokoroPhonemes(
   speed = 1,
   voice = DEFAULT_KOKORO_VOICE,
 ) {
+  const audio = await synthesizeKokoroAudio(phonemeIds, speed, voice);
+  directory.create({ idempotent: true, intermediates: true });
+  const result = new File(directory, `speech-${Date.now()}.wav`);
+  result.write(wavFile(audio));
+  return result;
+}
+
+async function synthesizeKokoroAudio(
+  phonemeIds: number[],
+  speed = 1,
+  voice = DEFAULT_KOKORO_VOICE,
+) {
   if (phonemeIds.length === 0 || phonemeIds.length > 510) {
     throw new Error('Kokoro phoneme input must contain between 1 and 510 IDs.');
   }
@@ -146,20 +162,53 @@ export async function synthesizeKokoroPhonemes(
   const output = await session.run({ input_ids: inputIds, style, speed: speedTensor });
   const audio = output.audio ?? Object.values(output)[0];
   if (!audio?.data) throw new Error('Kokoro returned no audio output.');
-  directory.create({ idempotent: true, intermediates: true });
-  const result = new File(directory, `speech-${Date.now()}.wav`);
-  result.write(wavFile(audio.data as Float32Array));
-  return result;
+  return Float32Array.from(audio.data as Float32Array);
 }
 
 export async function synthesizeKokoroText(text: string, voice = DEFAULT_KOKORO_VOICE) {
-  const phonemeIds = phonemizeKokoroText(text);
-  const wav = await synthesizeKokoroPhonemes(phonemeIds, 1, voice);
+  const words = text.replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+  if (words.length === 0) {
+    throw new Error('Kokoro could not find pronounceable text in this response.');
+  }
+  const chunks: string[] = [];
+  let current = '';
+
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    try {
+      phonemizeKokoroText(candidate);
+      current = candidate;
+    } catch (error) {
+      if (!current) throw error;
+      chunks.push(current);
+      current = word;
+      phonemizeKokoroText(current);
+    }
+  }
+  if (current) chunks.push(current);
+
+  const audioChunks: Float32Array[] = [];
+  for (const chunk of chunks) {
+    audioChunks.push(await synthesizeKokoroAudio(phonemizeKokoroText(chunk), 1, voice));
+  }
+
+  const totalSamples = audioChunks.reduce((total, chunk) => total + chunk.length, 0);
+  const samples = new Float32Array(totalSamples);
+  let offset = 0;
+  for (const chunk of audioChunks) {
+    samples.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  directory.create({ idempotent: true, intermediates: true });
+  const wav = new File(directory, `speech-${Date.now()}.wav`);
+  wav.write(wavFile(samples));
   playKokoroWav(wav);
   return wav;
 }
 
 export function playKokoroWav(file: File) {
+  player?.pause();
   player?.release();
   player = createAudioPlayer(file.uri);
   player.play();

@@ -2,6 +2,11 @@ export type ApiMessage = {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  attachmentName?: string;
+  attachmentType?: string;
+  attachmentMimeType?: string;
+  attachmentUri?: string;
+  attachmentContext?: string;
 };
 
 export type ApiConversation = {

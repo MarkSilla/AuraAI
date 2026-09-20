@@ -5,7 +5,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 
-import { cancelBackgroundDownload, cancelTrackedDownload, downloadModel, listBackgroundDownloads, listPendingDownloads, reconcileBackgroundDownloads, subscribeTrackedDownloads, type BackgroundDownload, type PendingDownload, type TrackedDownload } from '@/services/model-downloads';
+import { cancelBackgroundDownload, cancelPendingDownload, cancelTrackedDownload, downloadModel, listBackgroundDownloads, listPendingDownloads, reconcileBackgroundDownloads, subscribeTrackedDownloads, type BackgroundDownload, type PendingDownload, type TrackedDownload } from '@/services/model-downloads';
 
 export default function DownloadsScreen() {
   const router = useRouter();
@@ -71,8 +71,11 @@ export default function DownloadsScreen() {
                 <Text style={[styles.meta, { color: colors.muted }]}>Paused — tap play to continue</Text>
               </View>
             </View>
-          </View>
-        ))}
+ <Pressable style={[styles.cancel, { borderColor: colors.border }]} onPress={() => { cancelPendingDownload(download.fileName); void refresh(); }}>
+ <Text style={[styles.cancelText, { color: colors.text }]}>Remove download</Text>
+ </Pressable>
+ </View>
+ ))}
         {pendingDownloads.length === 0 && visibleDownloads.length === 0 ? <Text style={[styles.empty, { color: colors.muted }]}>No active model downloads.</Text> : visibleDownloads.map((download) => {
           const progress = download.totalBytes > 0 ? download.bytesWritten / download.totalBytes : 0;
           return (

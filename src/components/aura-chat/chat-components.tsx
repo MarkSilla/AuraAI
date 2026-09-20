@@ -112,6 +112,9 @@ export function MessageBubble({
               {message.attachmentName && (
                 <View style={[styles.attachmentCard, { borderColor: userBubbleTextColor }]}>
                   <SymbolView name={{ ios: 'doc.fill', android: 'description', web: 'description' }} size={17} tintColor={userBubbleTextColor} />
+                  <View style={[styles.attachmentTypeBadge, { borderColor: userBubbleTextColor }]}>
+                    <Text style={[styles.attachmentTypeText, { color: userBubbleTextColor }]}>{message.attachmentType || 'FILE'}</Text>
+                  </View>
                   <Text numberOfLines={1} style={[styles.attachmentName, { color: userBubbleTextColor }]}>{message.attachmentName}</Text>
                 </View>
               )}

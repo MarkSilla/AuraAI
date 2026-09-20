@@ -139,6 +139,12 @@ export function listPendingDownloads(): PendingDownload[] {
   return readPendingDownloads().filter((item) => new File(modelsDirectory, `${item.fileName}.part`).exists);
 }
 
+export function cancelPendingDownload(fileName: string) {
+ const partial = new File(modelsDirectory, fileName + '.part');
+ if (partial.exists) partial.delete();
+ forgetPendingDownload(fileName);
+}
+
 function notifyTrackedDownloads() {
   const downloads = [...trackedDownloads.values()];
   downloadListeners.forEach((listener) => listener(downloads));

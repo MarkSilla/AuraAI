@@ -106,6 +106,8 @@ export const styles = StyleSheet.create({
   },
   userBubble: { borderBottomRightRadius: 6 },
   attachmentCard: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderRadius: 9, paddingHorizontal: 9, paddingVertical: 7, marginBottom: 8 },
+  attachmentTypeBadge: { borderWidth: 1, borderRadius: 4, paddingHorizontal: 4, paddingVertical: 2 },
+  attachmentTypeText: { fontSize: 9, fontWeight: '800', letterSpacing: 0.4 },
   attachmentName: { flex: 1, fontSize: 12, fontWeight: '700' },
   assistantBubble: { borderWidth: 1, borderBottomLeftRadius: 6 },
   messageText: { fontSize: 15, lineHeight: 23 },

@@ -102,7 +102,13 @@ export default function AuraChat() {
   const [activeModelUri, setActiveModelUri] = useState<string | null>(null);
   const [kokoroVoice, setKokoroVoice] = useState<KokoroVoiceId>(DEFAULT_KOKORO_VOICE);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
-  const [selectedDocument, setSelectedDocument] = useState<{ name: string; text: string } | null>(null);
+  const [selectedDocument, setSelectedDocument] = useState<{
+    name: string;
+    type: string;
+    mimeType?: string | null;
+    uri: string;
+    text: string;
+  } | null>(null);
   const [userActionsMessageId, setUserActionsMessageId] = useState<string | null>(null);
   const modelCancelActions = useRef<Record<string, () => void>>({});
   const modelArrowRotation = useRef(new Animated.Value(0)).current;
@@ -290,6 +296,9 @@ export default function AuraChat() {
       role: 'user',
       content,
       attachmentName: selectedDocument?.name,
+      attachmentType: selectedDocument?.type,
+      attachmentMimeType: selectedDocument?.mimeType || undefined,
+      attachmentUri: selectedDocument?.uri,
       attachmentContext: selectedDocument?.text,
     };
     const assistantMessageId = `${Date.now()}-assistant`;
@@ -548,7 +557,9 @@ export default function AuraChat() {
     setResponseNotice(`Reading ${asset.name}…`);
     try {
       const text = await extractDocumentText(asset.uri, asset.name, asset.mimeType);
-      setSelectedDocument({ name: asset.name, text });
+        const extension = asset.name.split('.').pop()?.toUpperCase();
+        const type = extension && /^[A-Z0-9]{1,8}$/.test(extension) ? extension : 'FILE';
+        setSelectedDocument({ name: asset.name, type, mimeType: asset.mimeType, uri: asset.uri, text });
       setDraft((current) => current || 'Please summarize this file.');
       setToolsVisible(false);
       setResponseNotice(text.length >= MAX_DOCUMENT_CHARS ? `File text was limited to ${MAX_DOCUMENT_CHARS.toLocaleString()} characters.` : `${asset.name} is ready to summarize.`);

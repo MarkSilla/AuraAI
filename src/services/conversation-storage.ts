@@ -33,6 +33,11 @@ export async function loadLocalConversations(): Promise<ApiConversation[]> {
         id: message.id,
         role: message.role,
         content: message.content,
+        attachmentName: message.attachmentName,
+        attachmentType: message.attachmentType,
+        attachmentMimeType: message.attachmentMimeType,
+        attachmentUri: message.attachmentUri,
+        attachmentContext: message.attachmentContext,
       })),
     });
   }
@@ -83,6 +88,11 @@ export async function saveLocalConversation(messages: ApiMessage[]): Promise<Api
           record.conversationId = savedConversation.id;
           record.role = message.role;
           record.content = message.content;
+          record.attachmentName = message.attachmentName;
+          record.attachmentType = message.attachmentType;
+          record.attachmentMimeType = message.attachmentMimeType;
+          record.attachmentUri = message.attachmentUri;
+          record.attachmentContext = message.attachmentContext;
           record.position = position;
         }),
       ),

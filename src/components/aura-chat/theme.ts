@@ -3,6 +3,9 @@ export type Message = {
   role: 'user' | 'assistant';
   content: string;
   attachmentName?: string;
+  attachmentType?: string;
+  attachmentMimeType?: string;
+  attachmentUri?: string;
   attachmentContext?: string;
 };
 
