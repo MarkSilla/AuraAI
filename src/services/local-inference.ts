@@ -37,6 +37,7 @@ let loadedModelUri: string | null = null;
 let loadedContextSize: number | null = null;
 let context: LlamaContext | null = null;
 let generationId = 0;
+let streamedTextForStop = '';
 
 export class GenerationStoppedError extends Error {
   constructor() {
@@ -52,6 +53,18 @@ const MAX_HISTORY_MESSAGES = 12;
 const RECENT_HISTORY_MESSAGES = 8;
 const MAX_MESSAGE_CHARS = 2400;
 
+function normalizeModelHistory(history: { role: 'system' | 'user' | 'assistant'; content: string }[]) {
+  return history.reduce<{ role: 'system' | 'user' | 'assistant'; content: string }[]>((normalized, message) => {
+    const previous = normalized[normalized.length - 1];
+    if (previous?.role === message.role) {
+      previous.content = `${previous.content}\n\n${message.content}`.trim();
+      return normalized;
+    }
+    normalized.push({ ...message });
+    return normalized;
+  }, []);
+}
+
 function getContextSize(history: Message[]) {
   const characters = history.reduce((total, message) => total + message.content.length, 0);
   if (characters <= 6000) return 1536;
@@ -61,7 +74,10 @@ function getContextSize(history: Message[]) {
 
 function buildModelHistory(history: Message[], onStatus?: (status: GenerationStatus) => void) {
   if (history.length <= MAX_HISTORY_MESSAGES) {
-    return history.map(({ role, content }) => ({ role, content: content.slice(-MAX_MESSAGE_CHARS) }));
+    return history.map(({ role, content, attachmentContext }) => ({
+      role,
+      content: `${content}${attachmentContext ? `\n\nAttached file context:\n${attachmentContext}` : ''}`.slice(-MAX_MESSAGE_CHARS),
+    }));
   }
 
   onStatus?.('compacting');
@@ -70,9 +86,9 @@ function buildModelHistory(history: Message[], onStatus?: (status: GenerationSta
     .map(({ role, content }) => `${role === 'user' ? 'User' : 'AURA'}: ${content.replace(/\s+/g, ' ').trim().slice(0, 280)}`)
     .join(' | ')
     .slice(0, 2400);
-  const recentMessages = history.slice(-RECENT_HISTORY_MESSAGES).map(({ role, content }) => ({
+  const recentMessages = history.slice(-RECENT_HISTORY_MESSAGES).map(({ role, content, attachmentContext }) => ({
     role,
-    content: content.slice(-MAX_MESSAGE_CHARS),
+    content: `${content}${attachmentContext ? `\n\nAttached file context:\n${attachmentContext}` : ''}`.slice(-MAX_MESSAGE_CHARS),
   }));
   return [
     { role: 'system' as const, content: `Compact conversation summary: ${summary}` },
@@ -83,6 +99,7 @@ function buildModelHistory(history: Message[], onStatus?: (status: GenerationSta
 export async function stopLocalResponse() {
   generationId += 1;
   await context?.stopCompletion?.();
+  return streamedTextForStop.trim();
 }
 
 export async function unloadLocalModel() {
@@ -149,6 +166,7 @@ export async function generateLocalResponse(
 
   if (!context) throw new Error('The local model could not be initialized.');
   let streamedText = '';
+  streamedTextForStop = '';
   let pendingUpdate = false;
   let updateTimer: ReturnType<typeof setTimeout> | null = null;
   const emitStreamUpdate = () => {
@@ -161,10 +179,10 @@ export async function generateLocalResponse(
     onStatus?.('compacting');
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
-  let nextMessages = [
+  let nextMessages = normalizeModelHistory([
     { role: 'system' as const, content: `You are AURA, a helpful and concise AI assistant. ${settings.instruction} Format replies with Markdown: use headings and lists for structure, fenced code blocks with a language tag for code, and Markdown tables when comparing structured data.` },
     ...buildModelHistory(history, onStatus),
-  ];
+  ]);
   onStatus?.('generating');
   let result: { text: string; timings?: { predicted_n?: number } } = { text: '' };
   do {
@@ -177,6 +195,7 @@ export async function generateLocalResponse(
       },
       ({ token }) => {
         streamedText += token;
+        streamedTextForStop = streamedText;
         if (!pendingUpdate) {
           pendingUpdate = true;
           updateTimer = setTimeout(emitStreamUpdate, 50);
@@ -186,11 +205,11 @@ export async function generateLocalResponse(
     const reachedLimit = result.timings?.predicted_n === maxResponseTokens;
     if (!reachedLimit || continuation >= MAX_CONTINUATIONS) break;
     continuation += 1;
-    nextMessages = [
+    nextMessages = normalizeModelHistory([
       ...nextMessages,
       { role: 'assistant', content: streamedText.trim() },
       { role: 'user', content: 'Continue the previous answer from where it stopped. Do not repeat anything.' },
-    ];
+    ]);
   } while (requestId === generationId);
   if (updateTimer) clearTimeout(updateTimer);
   emitStreamUpdate();

@@ -12,7 +12,9 @@ export default function RootLayout() {
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <AnimatedSplashOverlay />
-      <Stack screenOptions={{ headerShown: false }} />
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="voice-manager" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
+      </Stack>
       <DownloadBanner />
     </ThemeProvider>
   );

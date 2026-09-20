@@ -198,8 +198,6 @@ public class BackgroundModelDownloadModule extends ReactContextBaseJavaModule {
           }
           preferences.edit().remove(idValue).remove(idValue + ".url").apply();
         } else if (status == DownloadManager.STATUS_FAILED) {
-          File part = new File(modelsDirectory(), fileName + ".part");
-          if (part.exists()) part.delete();
           WritableMap failed = Arguments.createMap();
           failed.putString("fileName", fileName);
           failed.putString("url", url);

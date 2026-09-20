@@ -94,6 +94,47 @@ function isTransientDownloadError(message: string) {
   return /socket|connection|network|timeout|abort|canceled|cancelled/i.test(message);
 }
 
+async function downloadWithResume(
+  url: string,
+  destination: File,
+  signal: AbortSignal,
+  onProgress: (bytesWritten: number, totalBytes: number) => void,
+) {
+  let existingBytes = destination.exists ? destination.size : 0;
+  let response = await fetch(url, {
+    headers: existingBytes > 0 ? { Range: `bytes=${existingBytes}-` } : undefined,
+    signal,
+  });
+
+  if (!response.ok && response.status !== 416) {
+    throw new Error(`Download failed (${response.status}).`);
+  }
+  if (existingBytes > 0 && response.status !== 206) {
+    existingBytes = 0;
+    response = await fetch(url, { signal });
+    if (!response.ok) throw new Error(`Download failed (${response.status}).`);
+  }
+  if (!response.body) throw new Error('The download response did not provide a readable stream.');
+
+  const contentLength = Number(response.headers.get('content-length') || 0);
+  const totalBytes = response.status === 206 ? existingBytes + contentLength : contentLength;
+  let bytesWritten = existingBytes;
+  let firstChunk = existingBytes === 0;
+  const reader = response.body.getReader();
+
+  onProgress(bytesWritten, totalBytes);
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    if (chunk.value.byteLength === 0) continue;
+    destination.write(chunk.value, { append: !firstChunk });
+    firstChunk = false;
+    bytesWritten += chunk.value.byteLength;
+    onProgress(bytesWritten, totalBytes);
+  }
+  return { bytesWritten, totalBytes };
+}
+
 export function listPendingDownloads(): PendingDownload[] {
   return readPendingDownloads().filter((item) => new File(modelsDirectory, `${item.fileName}.part`).exists);
 }
@@ -189,7 +230,7 @@ async function performDownload(
     return destination;
   }
 
-  if (Platform.OS === 'android' && nativeDownloader) {
+  if (Platform.OS === 'android' && nativeDownloader && !temporaryDestination.exists) {
     const fileName = modelFileName(url, fallbackName);
     let download: { id: number } | null = null;
     try {
@@ -257,13 +298,14 @@ async function performDownload(
   onCancel?.(cancel);
   trackedDownloads.set(key, { key, fileName: destination.name, url, status: 'downloading', bytesWritten: 0, totalBytes: 0, cancel });
   notifyTrackedDownloads();
-  report({ status: 'downloading', progress: 0, bytesWritten: 0, totalBytes: 0 });
+  report({ status: 'downloading', progress: 0, bytesWritten: temporaryDestination.size, totalBytes: 0 });
 
   try {
-    const file = await File.downloadFileAsync(url, temporaryDestination, {
-      idempotent: true,
-      signal: controller.signal,
-      onProgress: ({ bytesWritten, totalBytes }) => {
+    const progress = await downloadWithResume(
+      url,
+      temporaryDestination,
+      controller.signal,
+      (bytesWritten, totalBytes) => {
         report({
           status: 'downloading',
           progress: totalBytes > 0 ? bytesWritten / totalBytes : 0,
@@ -271,9 +313,15 @@ async function performDownload(
           totalBytes,
         });
       },
-    });
+    );
     temporaryDestination.move(destination);
-    report({ status: 'completed', progress: 1, bytesWritten: destination.size, totalBytes: destination.size, uri: destination.uri });
+    report({
+      status: 'completed',
+      progress: 1,
+      bytesWritten: progress.bytesWritten,
+      totalBytes: progress.totalBytes || progress.bytesWritten,
+      uri: destination.uri,
+    });
     forgetPendingDownload(destination.name);
     return destination;
   } catch (error) {
@@ -310,6 +358,49 @@ export function downloadModel(
     notifyTrackedDownloads();
     onCancel?.(queuedCancel);
     void processDownloadQueue();
+  });
+}
+
+export function downloadTrackedFile(
+  url: string,
+  destination: File,
+  onProgress?: (bytesWritten: number, totalBytes: number) => void,
+) {
+  const key = `asset:${destination.name}`;
+  if (trackedDownloads.has(key)) return Promise.reject(new Error('This file is already downloading.'));
+  return new Promise<File>((resolve, reject) => {
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    trackedDownloads.set(key, { key, fileName: destination.name, url, status: 'downloading', bytesWritten: 0, totalBytes: 0, cancel });
+    notifyTrackedDownloads();
+    void (async () => {
+      try {
+        const response = await fetch(url, { signal: controller.signal });
+        if (!response.ok || !response.body) throw new Error(`Download failed (${response.status}).`);
+        const totalBytes = Number(response.headers.get('content-length') || 0);
+        const reader = response.body.getReader();
+        let bytesWritten = 0;
+        let firstChunk = true;
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          if (chunk.value.byteLength === 0) continue;
+          destination.write(chunk.value, { append: !firstChunk });
+          firstChunk = false;
+          bytesWritten += chunk.value.byteLength;
+          const current = trackedDownloads.get(key);
+          if (current) trackedDownloads.set(key, { ...current, bytesWritten, totalBytes });
+          notifyTrackedDownloads();
+          onProgress?.(bytesWritten, totalBytes);
+        }
+        resolve(destination);
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error('The file download failed.'));
+      } finally {
+        trackedDownloads.delete(key);
+        notifyTrackedDownloads();
+      }
+    })();
   });
 }
 

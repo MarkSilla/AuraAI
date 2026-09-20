@@ -29,8 +29,10 @@ import {
   renameLocalConversation,
   saveLocalConversation,
 } from '@/services/conversation-storage';
+import { extractDocumentText, MAX_DOCUMENT_CHARS } from '@/services/document-extraction';
 import { deleteDownloadedModelFile, downloadModel, isModelDownloaded, listDownloadedModels, listPendingDownloads, reconcileBackgroundDownloads, type ModelDownloadProgress } from '@/services/model-downloads';
 import { generateLocalResponse, GenerationStoppedError, stopLocalResponse, unloadLocalModel, type ThinkingLevel } from '@/services/local-inference';
+import { DEFAULT_KOKORO_VOICE, synthesizeKokoroText, type KokoroVoiceId } from '@/services/kokoro-tts';
 import { loadAppSettings, saveAppSettings } from '@/services/app-settings';
 import { AuraMark, IconButton, MessageBubble, SurfaceButton } from './aura-chat/chat-components';
 import { configuredModel, MODEL_CATALOG, palette, SUGGESTIONS, TOOLS, type Conversation, type Message } from './aura-chat/theme';
@@ -43,7 +45,6 @@ const TOOL_ICONS = {
   Camera: { ios: 'camera.fill', android: 'photo_camera', web: 'photo_camera' },
   Image: { ios: 'photo', android: 'image', web: 'image' },
   File: { ios: 'doc.fill', android: 'insert_drive_file', web: 'description' },
-  Voice: { ios: 'mic.fill', android: 'mic', web: 'mic' },
   Web: { ios: 'globe', android: 'language', web: 'language' },
   Code: { ios: 'chevron.left.forwardslash.chevron.right', android: 'code', web: 'code' },
 } as const;
@@ -74,6 +75,7 @@ export default function AuraChat() {
   const [isTyping, setIsTyping] = useState(false);
   const [generationStatus, setGenerationStatus] = useState<'compacting' | 'generating'>('generating');
   const [responseNotice, setResponseNotice] = useState<string | null>(null);
+  const [readingFile, setReadingFile] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [search, setSearch] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -98,7 +100,9 @@ export default function AuraChat() {
   const [modelDownloads, setModelDownloads] = useState<Record<string, ModelDownloadProgress>>({});
   const [downloadedModels, setDownloadedModels] = useState<File[]>([]);
   const [activeModelUri, setActiveModelUri] = useState<string | null>(null);
+  const [kokoroVoice, setKokoroVoice] = useState<KokoroVoiceId>(DEFAULT_KOKORO_VOICE);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [selectedDocument, setSelectedDocument] = useState<{ name: string; text: string } | null>(null);
   const [userActionsMessageId, setUserActionsMessageId] = useState<string | null>(null);
   const modelCancelActions = useRef<Record<string, () => void>>({});
   const modelArrowRotation = useRef(new Animated.Value(0)).current;
@@ -110,6 +114,12 @@ export default function AuraChat() {
   const drawerAnimation = useRef(new Animated.Value(0)).current;
   const drawerSurfaceRef = useRef<View>(null);
   const conversationRowRefs = useRef<Record<string, View | null>>({});
+  const activeGenerationRef = useRef<{
+    assistantMessageId: string;
+    userMessage: Message;
+    history: Message[];
+    partialText: string;
+  } | null>(null);
 
   const openDrawer = () => {
     setDrawerMounted(true);
@@ -213,6 +223,7 @@ export default function AuraChat() {
     setResponseNotice(null);
     setIsTyping(false);
     setShowScrollToBottom(false);
+    setSelectedDocument(null);
     setMenuVisible(false);
     closeDrawer();
   };
@@ -221,9 +232,37 @@ export default function AuraChat() {
     const saved = await saveLocalConversation(messages);
     setConversations((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
   };
+  const commitStoppedGeneration = (partialText: string) => {
+    const activeGeneration = activeGenerationRef.current;
+    if (!activeGeneration) return;
+
+    const response = partialText.trim() || 'Generation stopped.';
+    const nextMessages = [
+      ...activeGeneration.history,
+      { id: activeGeneration.assistantMessageId, role: 'assistant' as const, content: response },
+    ];
+
+    setMessages((current) => {
+      const withoutActiveGeneration = current.filter(
+        (message) => message.id !== activeGeneration.userMessage.id && message.id !== activeGeneration.assistantMessageId,
+      );
+      return [...withoutActiveGeneration, activeGeneration.userMessage, nextMessages[nextMessages.length - 1]];
+    });
+    setStreamingReply(null);
+    void saveLocalConversation(nextMessages).catch((error) => {
+      Alert.alert('Autosave failed', error instanceof Error ? error.message : 'AURA could not save this conversation.');
+    });
+    activeGenerationRef.current = null;
+  };
   const newConversation = async () => {
     try {
-      await stopLocalResponse();
+      const hadActiveGeneration = Boolean(activeGenerationRef.current);
+      const partialText = await stopLocalResponse();
+      commitStoppedGeneration(partialText);
+      if (hadActiveGeneration) {
+        clearConversation();
+        return;
+      }
     } catch (error) {
       Alert.alert('Unable to start new chat', error instanceof Error ? error.message : 'The current response could not be stopped.');
       return;
@@ -243,9 +282,23 @@ export default function AuraChat() {
       setModelVisible(true);
       return;
     }
-    const userMessage: Message = { id: `${Date.now()}-user`, role: 'user', content };
+    const userMessage: Message = {
+      id: `${Date.now()}-user`,
+      role: 'user',
+      content,
+      attachmentName: selectedDocument?.name,
+      attachmentContext: selectedDocument?.text,
+    };
     const assistantMessageId = `${Date.now()}-assistant`;
+    const generationHistory = [...messages, userMessage];
+    activeGenerationRef.current = {
+      assistantMessageId,
+      userMessage,
+      history: generationHistory,
+      partialText: '',
+    };
     setMessages((current) => [...current, userMessage]);
+    setSelectedDocument(null);
     setStreamingReply(null);
     setResponseNotice(null);
     setDraft('');
@@ -258,10 +311,13 @@ export default function AuraChat() {
     try {
       const response = await generateLocalResponse(
         activeModelUri,
-        [...messages, userMessage],
+        generationHistory,
         thinkingLevel,
         (streamedText) => {
           if (!streamedText.trim()) return;
+          if (activeGenerationRef.current?.assistantMessageId === assistantMessageId) {
+            activeGenerationRef.current.partialText = streamedText;
+          }
           setStreamingReply({ id: assistantMessageId, role: 'assistant', content: streamedText });
         },
         (status) => setGenerationStatus(status),
@@ -273,14 +329,18 @@ export default function AuraChat() {
       });
       setStreamingReply(null);
       void saveLocalConversation([
-        ...messages,
-        userMessage,
+        ...generationHistory,
         { id: assistantMessageId, role: 'assistant', content: response },
       ]).catch((error) => {
         Alert.alert('Autosave failed', error instanceof Error ? error.message : 'AURA could not save this conversation.');
       });
+      activeGenerationRef.current = null;
     } catch (error) {
-      if (error instanceof GenerationStoppedError) return;
+      if (error instanceof GenerationStoppedError) {
+        commitStoppedGeneration(activeGenerationRef.current?.partialText || '');
+        return;
+      }
+      activeGenerationRef.current = null;
       setMessages((current) => current.filter((message) => message.id !== assistantMessageId || message.content.trim()));
       setStreamingReply(null);
       Alert.alert(
@@ -295,7 +355,8 @@ export default function AuraChat() {
   };
   const stopMessageGeneration = async () => {
     try {
-      await stopLocalResponse();
+      const partialText = await stopLocalResponse();
+      commitStoppedGeneration(partialText || activeGenerationRef.current?.partialText || '');
       setResponseNotice('Response stopped.');
     } catch (error) {
       Alert.alert('Unable to stop response', error instanceof Error ? error.message : 'The AI response could not be stopped.');
@@ -312,6 +373,13 @@ export default function AuraChat() {
       Alert.alert('Copied', 'The message was copied to your clipboard.');
     } catch (error) {
       Alert.alert('Copy failed', error instanceof Error ? error.message : 'The message could not be copied to your clipboard.');
+    }
+  };
+  const speakMessage = async (content: string) => {
+    try {
+      await synthesizeKokoroText(content, kokoroVoice);
+    } catch (error) {
+      Alert.alert('Kokoro speech unavailable', error instanceof Error ? error.message : 'Kokoro could not synthesize this response.');
     }
   };
   const exportConversations = async (items: Conversation[]) => {
@@ -462,14 +530,30 @@ export default function AuraChat() {
     }
 
     const result = await DocumentPicker.getDocumentAsync({
-      type: ['text/*', 'application/json', 'application/xml'],
+      type: [
+        'text/*',
+        'application/json',
+        'application/xml',
+        'application/pdf',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      ],
       copyToCacheDirectory: true,
     });
     if (result.canceled) return;
-    const file = new File(result.assets[0].uri);
-    const text = await file.text();
-    setDraft((current) => `${current ? `${current}\n\n` : ''}Use this file as context:\n\n${text.slice(0, 12000)}`);
-    setToolsVisible(false);
+    const asset = result.assets[0];
+    setReadingFile(asset.name);
+    setResponseNotice(`Reading ${asset.name}…`);
+    try {
+      const text = await extractDocumentText(asset.uri, asset.name, asset.mimeType);
+      setSelectedDocument({ name: asset.name, text });
+      setDraft((current) => current || 'Please summarize this file.');
+      setToolsVisible(false);
+      setResponseNotice(text.length >= MAX_DOCUMENT_CHARS ? `File text was limited to ${MAX_DOCUMENT_CHARS.toLocaleString()} characters.` : `${asset.name} is ready to summarize.`);
+    } catch (error) {
+      Alert.alert('Could not read file', error instanceof Error ? error.message : 'AURA could not extract readable text from this file.');
+    } finally {
+      setReadingFile(null);
+    }
   };
   const renderConversationItem = (item: Conversation, keyPrefix: 'recent' | 'pinned') => {
     const selected = selectedConversationIds.includes(item.id);
@@ -598,10 +682,10 @@ export default function AuraChat() {
                 <View style={styles.suggestions}>{SUGGESTIONS.map((suggestion) => <SurfaceButton key={suggestion} label={suggestion} onPress={() => sendMessage(suggestion)} colors={colors}><Text style={[styles.suggestionText, { color: colors.text }]}>{suggestion}</Text><SymbolView name={{ ios: 'arrow.up.right', android: 'north_east', web: 'arrow_upward' }} size={14} tintColor={colors.accent} /></SurfaceButton>)}</View>
               </>}
             </View> : <>
-              {messages.map((message) => <MessageBubble key={message.id} message={message} colors={colors} onCopy={copyMessage} userActionsVisible={userActionsMessageId === message.id} onUserActionsChange={(visible) => setUserActionsMessageId(visible ? message.id : null)} />)}
-              {streamingReply && <MessageBubble key={streamingReply.id} message={streamingReply} colors={colors} onCopy={copyMessage} userActionsVisible={false} onUserActionsChange={() => undefined} streaming={showTyping} />}
+              {messages.map((message) => <MessageBubble key={message.id} message={message} colors={colors} onCopy={copyMessage} onSpeak={speakMessage} userActionsVisible={userActionsMessageId === message.id} onUserActionsChange={(visible) => setUserActionsMessageId(visible ? message.id : null)} />)}
+              {streamingReply && <MessageBubble key={streamingReply.id} message={streamingReply} colors={colors} onCopy={copyMessage} onSpeak={speakMessage} userActionsVisible={false} onUserActionsChange={() => undefined} streaming={showTyping} />}
               {isTyping && !streamingReply && <Text style={[styles.thinkingText, { color: colors.muted }]}>{generationStatus === 'compacting' ? 'Compacting conversation…' : 'AURA is thinking…'}</Text>}
-              {responseNotice && <Text style={[styles.thinkingText, { color: colors.muted }]}>{responseNotice}</Text>}
+              {(responseNotice || readingFile) && <Text style={[styles.thinkingText, { color: colors.muted }]}>{readingFile ? `Reading ${readingFile}…` : responseNotice}</Text>}
             </>}
           </ScrollView>
           {showScrollToBottom && <Pressable
@@ -621,9 +705,9 @@ export default function AuraChat() {
         </View>
         <View style={[styles.composerArea, { backgroundColor: colors.background, paddingBottom: Math.max(insets.bottom, 10) }]}>
           <View style={[styles.composer, { backgroundColor: colors.surfaceRaised, borderColor: colors.borderStrong }]}>
-           <TextInput value={draft} onChangeText={setDraft} placeholder="Ask AURA anything..." placeholderTextColor={colors.muted} multiline maxLength={2000} style={[styles.input, { color: colors.text }]} onSubmitEditing={() => { if (enterToSend) void sendMessage(); }} blurOnSubmit={enterToSend} accessibilityLabel="Message AURA" />
+           <TextInput editable={!readingFile} value={draft} onChangeText={setDraft} placeholder={readingFile ? `Reading ${readingFile}…` : 'Ask AURA anything...'} placeholderTextColor={colors.muted} multiline maxLength={2000} style={[styles.input, { color: colors.text }]} onSubmitEditing={() => { if (enterToSend) void sendMessage(); }} blurOnSubmit={enterToSend} accessibilityLabel="Message AURA" />
            <View style={styles.composerBottomRow}>
-             <IconButton label="Open tools" onPress={() => setToolsVisible(true)}><Text style={[styles.plus, { color: colors.accent }]}>+</Text></IconButton>
+             <IconButton label="Open tools" onPress={() => setToolsVisible(true)} disabled={Boolean(readingFile)}><Text style={[styles.plus, { color: colors.accent }]}>+</Text></IconButton>
              <Pressable
                accessibilityRole="button"
                accessibilityLabel={`Thinking level ${thinkingLevel}`}
@@ -633,8 +717,10 @@ export default function AuraChat() {
                <Text style={[styles.thinkingLevelValue, { color: colors.text }]}>{thinkingLevel}</Text>
              </Pressable>
              <View style={styles.composerBottomSpacer} />
-             <IconButton label="Record a voice message" onPress={() => Alert.alert('Voice input', 'Voice input is ready to connect to your device microphone.')}><SymbolView name={{ ios: 'mic', android: 'mic', web: 'mic' }} size={18} tintColor={colors.muted} /></IconButton>
-             <Animated.View style={{ transform: [{ scale: sendScale }] }}><Pressable accessibilityRole="button" accessibilityLabel={isTyping ? 'Stop AURA response' : 'Send message'} disabled={!isTyping && !draft.trim()} onPress={() => void (isTyping ? stopMessageGeneration() : sendMessage())} style={[styles.sendButton, { backgroundColor: isTyping || draft.trim() ? colors.accent : colors.border }]}><SymbolView name={isTyping ? { ios: 'stop.fill', android: 'stop', web: 'stop' } : { ios: 'arrow.up', android: 'arrow_upward', web: 'arrow_upward' }} size={isTyping ? 15 : 17} tintColor={isTyping || draft.trim() ? (isDark ? '#000000' : '#FFFFFF') : colors.muted} /></Pressable></Animated.View>
+             <IconButton label="Open voice manager" onPress={() => router.push('/voice-manager')} disabled={Boolean(readingFile)}>
+               <SymbolView name={{ ios: 'speaker.wave.2.fill', android: 'volume_up', web: 'volume_up' }} size={18} tintColor={colors.accent} />
+             </IconButton>
+             <Animated.View style={{ transform: [{ scale: sendScale }] }}>             <Pressable accessibilityRole="button" accessibilityLabel={isTyping ? 'Stop AURA response' : 'Send message'} disabled={Boolean(readingFile) || (!isTyping && !draft.trim())} onPress={() => void (isTyping ? stopMessageGeneration() : sendMessage())} style={[styles.sendButton, { backgroundColor: isTyping || draft.trim() ? colors.accent : colors.border }]}><SymbolView name={isTyping ? { ios: 'stop.fill', android: 'stop', web: 'stop' } : { ios: 'arrow.up', android: 'arrow_upward', web: 'arrow_upward' }} size={isTyping ? 15 : 17} tintColor={isTyping || draft.trim() ? (isDark ? '#000000' : '#FFFFFF') : colors.muted} /></Pressable></Animated.View>
            </View>
          </View>
           <Text style={[styles.disclaimer, { color: colors.muted }]}>AURA can make mistakes. Check important information.</Text>

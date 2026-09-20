@@ -41,7 +41,9 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
-      ]
+      ],
+      "expo-audio",
+      "onnxruntime-react-native"
     ],
     "experiments": {
       "typedRoutes": true,

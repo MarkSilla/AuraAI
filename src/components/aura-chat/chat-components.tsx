@@ -24,15 +24,18 @@ export function IconButton({
   label,
   onPress,
   children,
+  disabled = false,
 }: {
   label: string;
   onPress: () => void;
   children: ReactNode;
+  disabled?: boolean;
 }) {
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
+      disabled={disabled}
       onPress={onPress}
       style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}>
       {children}
@@ -74,6 +77,7 @@ export function MessageBubble({
   message,
   colors,
   onCopy,
+  onSpeak,
   userActionsVisible = false,
   onUserActionsChange,
   streaming = false,
@@ -81,6 +85,7 @@ export function MessageBubble({
   message: Message;
   colors: AuraColors;
   onCopy: (content: string) => void;
+  onSpeak: (content: string) => void;
   userActionsVisible?: boolean;
   onUserActionsChange: (visible: boolean) => void;
   streaming?: boolean;
@@ -104,6 +109,12 @@ export function MessageBubble({
               onLongPress={() => onUserActionsChange(true)}
               delayLongPress={350}
               style={[styles.bubble, { backgroundColor: colors.userBubble, shadowColor: colors.shadow }, styles.userBubble]}>
+              {message.attachmentName && (
+                <View style={[styles.attachmentCard, { borderColor: userBubbleTextColor }]}>
+                  <SymbolView name={{ ios: 'doc.fill', android: 'description', web: 'description' }} size={17} tintColor={userBubbleTextColor} />
+                  <Text numberOfLines={1} style={[styles.attachmentName, { color: userBubbleTextColor }]}>{message.attachmentName}</Text>
+                </View>
+              )}
               <Text style={[styles.messageText, { color: userBubbleTextColor }]}>{message.content}</Text>
             </Pressable>
             {userActionsVisible && (
@@ -133,14 +144,24 @@ export function MessageBubble({
           </View>
         )}
         {!isUser && (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Copy AURA response"
-            onPress={() => onCopy(message.content)}
-            style={({ pressed }) => [styles.copyButton, pressed && styles.pressed]}>
-            <SymbolView name={{ ios: 'doc.on.doc', android: 'content_copy', web: 'link' }} size={13} tintColor={colors.muted} />
-            <Text style={[styles.copyText, { color: colors.muted }]}>Copy</Text>
-          </Pressable>
+          <View style={styles.responseActions}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Play AURA response"
+              onPress={() => onSpeak(message.content)}
+              style={({ pressed }) => [styles.copyButton, pressed && styles.pressed]}>
+              <SymbolView name={{ ios: 'speaker.wave.2', android: 'volume_up', web: 'volume_up' }} size={13} tintColor={colors.muted} />
+              <Text style={[styles.copyText, { color: colors.muted }]}>Speak</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Copy AURA response"
+              onPress={() => onCopy(message.content)}
+              style={({ pressed }) => [styles.copyButton, pressed && styles.pressed]}>
+              <SymbolView name={{ ios: 'doc.on.doc', android: 'content_copy', web: 'link' }} size={13} tintColor={colors.muted} />
+              <Text style={[styles.copyText, { color: colors.muted }]}>Copy</Text>
+            </Pressable>
+          </View>
         )}
       </View>
     </View>

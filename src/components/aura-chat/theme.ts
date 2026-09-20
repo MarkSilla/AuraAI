@@ -2,6 +2,8 @@ export type Message = {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  attachmentName?: string;
+  attachmentContext?: string;
 };
 
 export type Conversation = {
@@ -12,7 +14,7 @@ export type Conversation = {
 };
 
 export type Tool = {
-  label: 'Camera' | 'Image' | 'File' | 'Voice' | 'Web' | 'Code';
+  label: 'Camera' | 'Image' | 'File' | 'Web' | 'Code';
   icon: string;
 };
 
@@ -29,7 +31,6 @@ export const TOOLS: Tool[] = [
   { label: 'Camera', icon: 'camera' },
   { label: 'Image', icon: 'image' },
   { label: 'File', icon: 'insert_drive_file' },
-  { label: 'Voice', icon: 'mic' },
   { label: 'Web', icon: 'language' },
   { label: 'Code', icon: 'code' },
 ];
