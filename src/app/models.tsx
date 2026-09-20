@@ -1,8 +1,9 @@
 import { SymbolView } from 'expo-symbols';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View, useColorScheme } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useAppTheme } from '@/hooks/use-app-theme';
 
 import { deleteDownloadedModelFile, listDownloadedModels, reconcileBackgroundDownloads } from '@/services/model-downloads';
 import { loadAppSettings, saveAppSettings } from '@/services/app-settings';
@@ -10,8 +11,7 @@ import { unloadLocalModel } from '@/services/local-inference';
 
 export default function ModelsScreen() {
   const router = useRouter();
-  const scheme = useColorScheme();
-  const dark = scheme === 'dark';
+  const dark = useAppTheme() === 'dark';
   const colors = {
     background: dark ? '#000000' : '#F7F7F8',
     surface: dark ? '#111111' : '#FFFFFF',

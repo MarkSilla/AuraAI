@@ -9,6 +9,7 @@ export type AppSettings = {
   enterToSend?: boolean;
   userBubbleColor?: string;
   hasSeenTutorial?: boolean;
+  kokoroVoice?: string;
 };
 
 const settingsFile = new File(Paths.document, 'aura-settings.json');

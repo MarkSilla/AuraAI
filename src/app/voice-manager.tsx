@@ -1,8 +1,10 @@
 import { SymbolView } from 'expo-symbols';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View, useColorScheme } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useAppTheme } from '@/hooks/use-app-theme';
+import { loadAppSettings, saveAppSettings } from '@/services/app-settings';
 
 import {
   areKokoroArtifactsDownloaded,
@@ -16,12 +18,22 @@ import {
 
 export default function VoiceManagerScreen() {
   const router = useRouter();
-  const dark = useColorScheme() === 'dark';
+  const dark = useAppTheme() === 'dark';
   const colors = { background: dark ? '#000' : '#F7F7F8', surface: dark ? '#111' : '#FFF', border: dark ? '#2A2A2A' : '#E5E5E5', text: dark ? '#ECECEC' : '#202123', muted: dark ? '#AFAFAF' : '#6B6B6B', accent: dark ? '#ECECEC' : '#202123' };
-  const [selected, setSelected] = useState<KokoroVoiceId>(DEFAULT_KOKORO_VOICE);
+  const [selected, setSelected] = useState<KokoroVoiceId>(() => {
+    const saved = loadAppSettings().kokoroVoice;
+    return KOKORO_VOICES.some((voice) => voice.id === saved) ? saved as KokoroVoiceId : DEFAULT_KOKORO_VOICE;
+  });
   const [progress, setProgress] = useState<KokoroDownloadProgress | null>(null);
   const [status, setStatus] = useState('');
   const [previewing, setPreviewing] = useState(false);
+  const goBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/');
+    }
+  };
 
   const download = async () => {
     setStatus('Preparing voice download…');
@@ -56,7 +68,7 @@ export default function VoiceManagerScreen() {
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} style={styles.headerButton} accessibilityLabel="Go back"><SymbolView name={{ ios: 'chevron.left', android: 'arrow_back', web: 'arrow_back' }} size={22} tintColor={colors.text} /></Pressable>
+        <Pressable onPress={goBack} style={styles.headerButton} accessibilityLabel="Go back"><SymbolView name={{ ios: 'chevron.left', android: 'arrow_back', web: 'arrow_back' }} size={22} tintColor={colors.text} /></Pressable>
         <View style={styles.headerCopy}><Text style={[styles.title, { color: colors.text }]}>Voice Manager</Text><Text style={[styles.subtitle, { color: colors.muted }]}>Download and preview offline Kokoro voices.</Text></View>
         <Pressable onPress={() => router.push('/downloads')} style={styles.headerButton} accessibilityLabel="Open Download Manager"><SymbolView name={{ ios: 'arrow.down.circle', android: 'download', web: 'download' }} size={20} tintColor={colors.muted} /></Pressable>
       </View>
@@ -65,7 +77,7 @@ export default function VoiceManagerScreen() {
         <ScrollView style={styles.voiceList} showsVerticalScrollIndicator>
           {KOKORO_VOICES.map((voice) => {
             const saved = areKokoroArtifactsDownloaded(voice.id);
-            return <Pressable key={voice.id} onPress={() => { setSelected(voice.id); setProgress(null); setStatus(''); }} style={[styles.voiceCard, { borderColor: selected === voice.id ? colors.accent : colors.border, backgroundColor: colors.surface }]}>
+            return <Pressable key={voice.id} onPress={() => { setSelected(voice.id); saveAppSettings({ ...loadAppSettings(), kokoroVoice: voice.id }); setProgress(null); setStatus(''); }} style={[styles.voiceCard, { borderColor: selected === voice.id ? colors.accent : colors.border, backgroundColor: colors.surface }]}>
               <View style={[styles.voiceIcon, { backgroundColor: selected === voice.id ? colors.accent : colors.background }]}><SymbolView name={{ ios: 'speaker.wave.2.fill', android: 'volume_up', web: 'volume_up' }} size={18} tintColor={selected === voice.id ? (dark ? '#000' : '#FFF') : colors.muted} /></View>
               <View style={styles.voiceCopy}><Text style={[styles.voiceName, { color: colors.text }]}>{voice.name}</Text><Text style={[styles.voiceDescription, { color: colors.muted }]}>{voice.description}</Text></View>
               <Text style={[styles.savedLabel, { color: saved ? '#16803C' : colors.muted }]}>{saved ? 'Saved' : 'Download'}</Text>

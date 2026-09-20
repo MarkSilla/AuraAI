@@ -48,6 +48,7 @@
   "scripts": {
     "start": "expo start",
     "backend": "node server/index.js",
+    "postinstall": "node scripts/patch-native-gradle-compat.js",
     "reset-project": "node ./scripts/reset-project.js",
     "android": "expo run:android",
     "dev:android": "expo run:android",

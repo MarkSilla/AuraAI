@@ -1,8 +1,9 @@
 import { SymbolView } from 'expo-symbols';
 import { useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useColorScheme } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useAppTheme } from '@/hooks/use-app-theme';
 
 import { cancelTrackedDownload, downloadModel, subscribeTrackedDownloads, type TrackedDownload } from '@/services/model-downloads';
 import { formatModelSize, getHuggingFaceFileSize, getHuggingFaceFileUrl, isLoadableGgufFile, searchHuggingFaceModels, type HuggingFaceModel } from '@/services/huggingface-models';
@@ -10,7 +11,7 @@ import { estimateModelCompatibility, formatMemory, getDeviceResources, type Devi
 
 export default function ModelBrowserScreen() {
   const router = useRouter();
-  const dark = useColorScheme() === 'dark';
+  const dark = useAppTheme() === 'dark';
   const colors = {
     background: dark ? '#000000' : '#F7F7F8',
     surface: dark ? '#111111' : '#FFFFFF',

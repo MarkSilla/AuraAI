@@ -1,14 +1,15 @@
 import { SymbolView } from 'expo-symbols';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View, useColorScheme } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useAppTheme } from '@/hooks/use-app-theme';
 
 import { cancelBackgroundDownload, cancelTrackedDownload, downloadModel, listBackgroundDownloads, listPendingDownloads, reconcileBackgroundDownloads, subscribeTrackedDownloads, type BackgroundDownload, type PendingDownload, type TrackedDownload } from '@/services/model-downloads';
 
 export default function DownloadsScreen() {
   const router = useRouter();
-  const dark = useColorScheme() === 'dark';
+  const dark = useAppTheme() === 'dark';
   const colors = { background: dark ? '#000' : '#F7F7F8', surface: dark ? '#111' : '#FFF', border: dark ? '#2A2A2A' : '#E5E5E5', text: dark ? '#ECECEC' : '#202123', muted: dark ? '#AFAFAF' : '#6B6B6B', accent: dark ? '#ECECEC' : '#202123' };
   const [downloads, setDownloads] = useState<BackgroundDownload[]>([]);
   const [trackedDownloads, setTrackedDownloads] = useState<TrackedDownload[]>([]);

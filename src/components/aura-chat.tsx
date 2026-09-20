@@ -32,7 +32,7 @@ import {
 import { extractDocumentText, MAX_DOCUMENT_CHARS } from '@/services/document-extraction';
 import { deleteDownloadedModelFile, downloadModel, isModelDownloaded, listDownloadedModels, listPendingDownloads, reconcileBackgroundDownloads, type ModelDownloadProgress } from '@/services/model-downloads';
 import { generateLocalResponse, GenerationStoppedError, stopLocalResponse, unloadLocalModel, type ThinkingLevel } from '@/services/local-inference';
-import { DEFAULT_KOKORO_VOICE, synthesizeKokoroText, type KokoroVoiceId } from '@/services/kokoro-tts';
+import { DEFAULT_KOKORO_VOICE, KOKORO_VOICES, synthesizeKokoroText, type KokoroVoiceId } from '@/services/kokoro-tts';
 import { loadAppSettings, saveAppSettings } from '@/services/app-settings';
 import { AuraMark, IconButton, MessageBubble, SurfaceButton } from './aura-chat/chat-components';
 import { configuredModel, MODEL_CATALOG, palette, SUGGESTIONS, TOOLS, type Conversation, type Message } from './aura-chat/theme';
@@ -160,6 +160,9 @@ export default function AuraChat() {
       setEnterToSend(settings.enterToSend ?? true);
       setUserBubbleColor(settings.userBubbleColor || (settings.themeMode === 'dark' ? '#123A63' : '#202123'));
       setThemeMode(settings.themeMode || (systemScheme === 'dark' ? 'dark' : 'light'));
+      if (KOKORO_VOICES.some((voice) => voice.id === settings.kokoroVoice)) {
+        setKokoroVoice(settings.kokoroVoice as KokoroVoiceId);
+      }
       setPinnedConversationIds(settings.pinnedConversationIds || []);
       const savedUri = settings.activeModelUri && savedModels.some((file) => file.uri === settings.activeModelUri)
         ? settings.activeModelUri
@@ -720,7 +723,20 @@ export default function AuraChat() {
              <IconButton label="Open voice manager" onPress={() => router.push('/voice-manager')} disabled={Boolean(readingFile)}>
                <SymbolView name={{ ios: 'speaker.wave.2.fill', android: 'volume_up', web: 'volume_up' }} size={18} tintColor={colors.accent} />
              </IconButton>
-             <Animated.View style={{ transform: [{ scale: sendScale }] }}>             <Pressable accessibilityRole="button" accessibilityLabel={isTyping ? 'Stop AURA response' : 'Send message'} disabled={Boolean(readingFile) || (!isTyping && !draft.trim())} onPress={() => void (isTyping ? stopMessageGeneration() : sendMessage())} style={[styles.sendButton, { backgroundColor: isTyping || draft.trim() ? colors.accent : colors.border }]}><SymbolView name={isTyping ? { ios: 'stop.fill', android: 'stop', web: 'stop' } : { ios: 'arrow.up', android: 'arrow_upward', web: 'arrow_upward' }} size={isTyping ? 15 : 17} tintColor={isTyping || draft.trim() ? (isDark ? '#000000' : '#FFFFFF') : colors.muted} /></Pressable></Animated.View>
+             <Animated.View style={{ transform: [{ scale: sendScale }] }}>
+               <Pressable
+                 accessibilityRole="button"
+                 accessibilityLabel={isTyping ? 'Stop AURA response' : 'Send message'}
+                 disabled={Boolean(readingFile) || (!isTyping && !draft.trim())}
+                 onPress={() => void (isTyping ? stopMessageGeneration() : sendMessage())}
+                 style={[styles.sendButton, { backgroundColor: isTyping || draft.trim() ? colors.accent : colors.border }]}>
+                 <SymbolView
+                   name={isTyping ? { ios: 'stop.fill', android: 'stop', web: 'stop' } : { ios: 'arrow.up', android: 'arrow_upward', web: 'arrow_upward' }}
+                   size={isTyping ? 15 : 17}
+                   tintColor={isTyping || draft.trim() ? (isDark ? '#000000' : '#FFFFFF') : colors.muted}
+                 />
+               </Pressable>
+             </Animated.View>
            </View>
          </View>
           <Text style={[styles.disclaimer, { color: colors.muted }]}>AURA can make mistakes. Check important information.</Text>
@@ -833,6 +849,16 @@ export default function AuraChat() {
               </View>
               <Text style={[styles.settingsSection, { color: colors.muted }]}>MODEL</Text>
               <View style={[styles.settingsCard, { borderColor: colors.border }]}><View style={styles.settingRow}><View style={styles.settingCopy}><Text style={[styles.settingTitle, { color: colors.text }]}>Active model</Text><Text style={[styles.settingDescription, { color: colors.muted }]}>{activeModel?.name || configuredModel || 'No model connected'}</Text></View></View><View style={[styles.settingInline, { borderTopColor: colors.border }]}><Pressable onPress={() => { setSettingsVisible(false); setModelVisible(true); }}><Text style={[styles.settingValue, { color: colors.text }]}>Manage models</Text></Pressable></View></View>
+              <Text style={[styles.settingsSection, { color: colors.muted }]}>VOICE</Text>
+              <View style={[styles.settingsCard, { borderColor: colors.border }]}>
+                <View style={styles.settingRow}>
+                  <View style={styles.settingCopy}><Text style={[styles.settingTitle, { color: colors.text }]}>AURA voice</Text><Text style={[styles.settingDescription, { color: colors.muted }]}>{KOKORO_VOICES.find((voice) => voice.id === kokoroVoice)?.name || 'Heart'} · Offline Kokoro</Text></View>
+                  <SymbolView name={{ ios: 'speaker.wave.2.fill', android: 'volume_up', web: 'volume_up' }} size={18} tintColor={colors.muted} />
+                </View>
+                <View style={[styles.settingInline, { borderTopColor: colors.border }]}>
+                  <Pressable onPress={() => { setSettingsVisible(false); router.push('/voice-manager'); }}><Text style={[styles.settingValue, { color: colors.text }]}>Manage voices</Text></Pressable>
+                </View>
+              </View>
               <Text style={[styles.settingsSection, { color: colors.muted }]}>DATA</Text>
               <View style={[styles.settingsCard, { borderColor: colors.border }]}><Pressable style={styles.settingRow} onPress={clearConversation}><View style={styles.settingCopy}><Text style={[styles.settingTitle, { color: colors.text }]}>Clear current conversation</Text><Text style={[styles.settingDescription, { color: colors.muted }]}>Remove messages from this screen.</Text></View><SymbolView name={{ ios: 'trash', android: 'delete_outline', web: 'delete' }} size={17} tintColor={colors.muted} /></Pressable></View>
               <View style={[styles.settingsCard, { borderColor: colors.border, marginTop: 12 }]}><Pressable style={styles.settingRow} onPress={() => { setSettingsVisible(false); router.push('/tutorial'); }}><View style={styles.settingCopy}><Text style={[styles.settingTitle, { color: colors.text }]}>View tutorial again</Text><Text style={[styles.settingDescription, { color: colors.muted }]}>Review how to download a model and chat with AURA.</Text></View><SymbolView name={{ ios: 'book', android: 'menu_book', web: 'menu_book' }} size={17} tintColor={colors.muted} /></Pressable></View>
