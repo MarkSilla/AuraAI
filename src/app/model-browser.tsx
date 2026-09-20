@@ -47,13 +47,16 @@ export default function ModelBrowserScreen() {
   useEffect(() => {
     void search();
     void getDeviceResources().then(setResources);
-    return subscribeTrackedDownloads((downloads) => {
+    const unsubscribe = subscribeTrackedDownloads((downloads) => {
       setTrackedDownloads(downloads);
       const active = downloads.find((download) => download.status === 'downloading');
       if (active) {
         setProgress(active.totalBytes > 0 ? active.bytesWritten / active.totalBytes : 0);
       }
     });
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
   useEffect(() => {

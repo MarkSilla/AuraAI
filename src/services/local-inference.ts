@@ -25,7 +25,7 @@ type LlamaModule = {
 };
 
 export type ThinkingLevel = 'low' | 'medium' | 'high';
-type GenerationStatus = 'compacting' | 'generating';
+type GenerationStatus = 'loading' | 'compacting' | 'generating';
 
 const thinkingSettings: Record<ThinkingLevel, { temperature: number; instruction: string }> = {
   low: { temperature: 0.8, instruction: 'Keep reasoning focused and answer directly.' },
@@ -52,6 +52,28 @@ const MAX_CONTINUATIONS = 2;
 const MAX_HISTORY_MESSAGES = 12;
 const RECENT_HISTORY_MESSAGES = 8;
 const MAX_MESSAGE_CHARS = 2400;
+
+function visibleModelText(text: string) {
+  let visible = text;
+
+  // Some instruct models expose their reasoning with XML-style think tags.
+  visible = visible.replace(/<think(?:ing)?\b[^>]*>[\s\S]*?(?:<\/think(?:ing)?>|$)/gi, '');
+
+  // Newer templates can emit OpenAI-style channel markers instead.
+  const finalChannel = visible.search(/<\|channel\|>\s*(?:final|assistant)\s*<\|message\|>/i);
+  if (finalChannel >= 0) {
+    visible = visible.slice(finalChannel).replace(
+      /^<\|channel\|>\s*(?:final|assistant)\s*<\|message\|>/i,
+      '',
+    );
+  } else if (/<\|channel\|>\s*(?:analysis|thinking|thought)\s*<\|message\|>/i.test(visible)) {
+    return '';
+  }
+
+  return visible
+    .replace(/<\|(?:end|end_of_text|eot_id|eot|im_end)\|>/gi, '')
+    .trim();
+}
 
 function normalizeModelHistory(history: { role: 'system' | 'user' | 'assistant'; content: string }[]) {
   return history.reduce<{ role: 'system' | 'user' | 'assistant'; content: string }[]>((normalized, message) => {
@@ -145,6 +167,7 @@ export async function generateLocalResponse(
     context = null;
     loadedModelUri = null;
     loadedContextSize = null;
+    onStatus?.('loading');
     try {
       context = await getLlamaModule().initLlama({
         model: modelUri,
@@ -172,7 +195,9 @@ export async function generateLocalResponse(
   const emitStreamUpdate = () => {
     pendingUpdate = false;
     updateTimer = null;
-    if (requestId === generationId) onToken?.(streamedText);
+    const visibleText = visibleModelText(streamedText);
+    streamedTextForStop = visibleText;
+    if (requestId === generationId) onToken?.(visibleText);
   };
   let continuation = 0;
   if (history.length > MAX_HISTORY_MESSAGES) {
@@ -180,7 +205,7 @@ export async function generateLocalResponse(
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   let nextMessages = normalizeModelHistory([
-    { role: 'system' as const, content: `You are AURA, a helpful and concise AI assistant. ${settings.instruction} Format replies with Markdown: use headings and lists for structure, fenced code blocks with a language tag for code, and Markdown tables when comparing structured data.` },
+    { role: 'system' as const, content: `You are AURA, a helpful and concise AI assistant. ${settings.instruction} Keep internal reasoning private and output only the final answer. Do not include think tags, analysis channels, or hidden reasoning in your response. Format replies with Markdown: use headings and lists for structure, fenced code blocks with a language tag for code, and Markdown tables when comparing structured data.` },
     ...buildModelHistory(history, onStatus),
   ]);
   onStatus?.('generating');
@@ -195,7 +220,7 @@ export async function generateLocalResponse(
       },
       ({ token }) => {
         streamedText += token;
-        streamedTextForStop = streamedText;
+        streamedTextForStop = visibleModelText(streamedText);
         if (!pendingUpdate) {
           pendingUpdate = true;
           updateTimer = setTimeout(emitStreamUpdate, 50);
@@ -212,9 +237,11 @@ export async function generateLocalResponse(
     ]);
   } while (requestId === generationId);
   if (updateTimer) clearTimeout(updateTimer);
+  streamedText = visibleModelText(streamedText);
+  streamedTextForStop = streamedText;
   emitStreamUpdate();
   if (requestId !== generationId) throw new GenerationStoppedError();
-  const response = streamedText.trim() || result.text.trim();
+  const response = visibleModelText(streamedText || result.text);
   if (!response) throw new Error('AURA could not generate a response. Please try again.');
   return response;
 }

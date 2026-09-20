@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   ActivityIndicator,
+  AppState,
   Animated,
   Dimensions,
   Keyboard,
@@ -73,7 +74,7 @@ export default function AuraChat() {
   const [userBubbleColor, setUserBubbleColor] = useState('#202123');
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
-  const [generationStatus, setGenerationStatus] = useState<'compacting' | 'generating'>('generating');
+  const [generationStatus, setGenerationStatus] = useState<'loading' | 'compacting' | 'generating'>('generating');
   const [responseNotice, setResponseNotice] = useState<string | null>(null);
   const [readingFile, setReadingFile] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -198,6 +199,16 @@ export default function AuraChat() {
     if (!settingsLoaded) return;
     saveAppSettings({ ...loadAppSettings(), activeModelUri, thinkingLevel, themeMode, pinnedConversationIds, maxResponseTokens, enterToSend, userBubbleColor });
   }, [activeModelUri, enterToSend, maxResponseTokens, pinnedConversationIds, settingsLoaded, thinkingLevel, themeMode, userBubbleColor]);
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState !== 'active') {
+        void unloadLocalModel().catch((error) => {
+          console.error('Automatic model unload failed.', error);
+        });
+      }
+    });
+    return () => subscription.remove();
+  }, []);
   useFocusEffect(
     useCallback(() => {
       void reconcileBackgroundDownloads().then(() => {
@@ -285,7 +296,7 @@ export default function AuraChat() {
   };
   const sendMessage = async (value = draft) => {
     const content = value.trim();
-    if (!content || isTyping) return;
+    if (!content || isTyping || activeGenerationRef.current) return;
     if (!activeModelUri) {
       setModelStatus('Download a model on this device before starting a chat.');
       setModelVisible(true);
@@ -366,6 +377,10 @@ export default function AuraChat() {
     }
   };
   const stopMessageGeneration = async () => {
+    // End the UI state immediately; native cancellation may take a moment.
+    setIsTyping(false);
+    setStreamingReply(null);
+    setGenerationStatus('generating');
     try {
       const partialText = await stopLocalResponse();
       commitStoppedGeneration(partialText || activeGenerationRef.current?.partialText || '');
@@ -698,7 +713,18 @@ export default function AuraChat() {
             </View> : <>
               {messages.map((message) => <MessageBubble key={message.id} message={message} colors={colors} onCopy={copyMessage} onSpeak={speakMessage} userActionsVisible={userActionsMessageId === message.id} onUserActionsChange={(visible) => setUserActionsMessageId(visible ? message.id : null)} />)}
               {streamingReply && <MessageBubble key={streamingReply.id} message={streamingReply} colors={colors} onCopy={copyMessage} onSpeak={speakMessage} userActionsVisible={false} onUserActionsChange={() => undefined} streaming={showTyping} />}
-              {isTyping && !streamingReply && <Text style={[styles.thinkingText, { color: colors.muted }]}>{generationStatus === 'compacting' ? 'Compacting conversation…' : 'AURA is thinking…'}</Text>}
+              {isTyping && !streamingReply && (
+                <View style={styles.thinkingRow}>
+                  <ActivityIndicator size="small" color={colors.muted} />
+                  <Text style={[styles.thinkingText, { color: colors.muted }]}>
+                    {generationStatus === 'loading'
+                      ? 'Loading model…'
+                      : generationStatus === 'compacting'
+                        ? 'Preparing conversation…'
+                        : 'Processing…'}
+                  </Text>
+                </View>
+              )}
               {(responseNotice || readingFile) && <Text style={[styles.thinkingText, { color: colors.muted }]}>{readingFile ? `Reading ${readingFile}…` : responseNotice}</Text>}
             </>}
           </ScrollView>

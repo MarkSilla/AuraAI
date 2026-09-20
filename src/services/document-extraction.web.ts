@@ -20,10 +20,11 @@ function limitText(text: string) {
 
 async function extractPdfText(bytes: Uint8Array) {
   const pdfjs = require('pdfjs-dist/legacy/build/pdf.js') as typeof import('pdfjs-dist');
+  type WebPdfOptions = Parameters<typeof pdfjs.getDocument>[0] & { disableWorker: boolean };
   const document = await pdfjs.getDocument({
     data: bytes,
     disableWorker: true,
-  }).promise;
+  } as WebPdfOptions).promise;
   const pages: string[] = [];
 
   for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {

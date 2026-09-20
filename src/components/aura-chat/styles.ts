@@ -254,7 +254,7 @@ export const styles = StyleSheet.create({
   drawerFooterTitle: { fontSize: 12, fontWeight: '700' },
   drawerFooterText: { fontSize: 11, lineHeight: 15, marginTop: 4 },
   sheetBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.3)', justifyContent: 'flex-end' },
-  sheetDismissArea: { ...StyleSheet.absoluteFillObject },
+  sheetDismissArea: { ...StyleSheet.absoluteFill },
   modelSheet: { borderTopLeftRadius: 26, borderTopRightRadius: 26, paddingHorizontal: 18, paddingTop: 10, paddingBottom: 28 },
   modelSheetHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 18 },
   modelHeaderActions: { flexDirection: 'row', alignItems: 'center', gap: 2 },

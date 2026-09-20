@@ -42,10 +42,10 @@ export const configuredModel = process.env.EXPO_PUBLIC_MODEL_NAME?.trim();
 
 export const MODEL_CATALOG = [
   { name: 'SmolLM2-360M-Instruct-Q4', source: 'Hugging Face · GGUF', size: '~250 MB', recommended: true, url: 'https://huggingface.co/bartowski/SmolLM2-360M-Instruct-GGUF/resolve/main/SmolLM2-360M-Instruct-Q4_K_M.gguf?download=true' },
-  { name: 'Llama 3.2 3B Instruct', source: 'Meta · GGUF', size: '~2 GB', url: 'https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf?download=true' },
-  { name: 'Qwen2.5 3B Instruct', source: 'Alibaba · GGUF', size: '~2 GB', url: 'https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q4_K_M.gguf?download=true' },
-  { name: 'Phi-3.5 Mini Instruct', source: 'Microsoft · GGUF', size: '~2.4 GB', url: 'https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf?download=true' },
-  { name: 'Gemma 3 4B Instruct', source: 'Google · GGUF', size: '~3 GB', url: 'https://huggingface.co/bartowski/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf?download=true' },
+  { name: 'Llama 3.2 3B Instruct', source: 'Meta · GGUF', size: '~2 GB', recommended: false, url: 'https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf?download=true' },
+  { name: 'Qwen2.5 3B Instruct', source: 'Alibaba · GGUF', size: '~2 GB', recommended: false, url: 'https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q4_K_M.gguf?download=true' },
+  { name: 'Phi-3.5 Mini Instruct', source: 'Microsoft · GGUF', size: '~2.4 GB', recommended: false, url: 'https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf?download=true' },
+  { name: 'Gemma 3 4B Instruct', source: 'Google · GGUF', size: '~3 GB', recommended: false, url: 'https://huggingface.co/bartowski/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf?download=true' },
 ] as const;
 
 export const palette = {

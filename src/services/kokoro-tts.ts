@@ -43,8 +43,15 @@ function loadOnnxRuntime(): typeof Ort {
       throw new Error('The ONNX Runtime native module is missing from this Android build. Rebuild the development or release APK after installing the native module.');
     }
     return runtime;
-  } catch {
-    throw new Error('Offline Kokoro speech needs an Android/iOS build with ONNX Runtime included. Expo Go cannot load it; rebuild the APK after installing the native module.');
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('ONNX Runtime native module is missing')) {
+      throw error;
+    }
+    throw new Error(
+      error instanceof Error
+        ? `Offline Kokoro could not load ONNX Runtime: ${error.message}`
+        : 'Offline Kokoro speech needs an Android/iOS build with ONNX Runtime included. Expo Go cannot load it.',
+    );
   }
 }
 
